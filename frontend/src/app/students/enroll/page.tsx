@@ -13,6 +13,14 @@ const POSE_STEPS = [
   { label: "Look straight (confirm)", emoji: "✅" },
 ];
 
+// Minimum accepted frames required before moving to the next pose step.
+// System will keep retrying until this many frames are accepted or
+// MAX_ATTEMPTS_PER_STEP is reached.
+const MIN_ACCEPTED_PER_STEP = 5;
+// 60 attempts × 600 ms = 36 seconds per step before giving up.
+// This is generous enough for any real-world lighting/positioning.
+const MAX_ATTEMPTS_PER_STEP = 60;
+
 type CameraMode = "local" | "ip";
 
 function EnrollContent() {
@@ -31,12 +39,21 @@ function EnrollContent() {
   const [error, setError] = useState("");
   const [inputId, setInputId] = useState(studentId);
 
+  // Per-step acceptance tracking
+  const [currentStepAccepted, setCurrentStepAccepted] = useState(0);
+  const [stepAccepted, setStepAccepted] = useState<number[]>(new Array(POSE_STEPS.length).fill(0));
+  // Last-frame rejection feedback
+  const [rejectReason, setRejectReason] = useState<string | null>(null);
+  // Live quality debug info (blur, det_score, yaw, pitch of last accepted frame)
+  const [lastQuality, setLastQuality] = useState<{blur?: number; det?: number; yaw?: number; pitch?: number} | null>(null);
+  // Current attempt counter for "still scanning" feedback
+  const [currentAttempts, setCurrentAttempts] = useState(0);
+
   const [cameraMode, setCameraMode] = useState<CameraMode>("local");
   const [ipUrl, setIpUrl] = useState("http://192.168.123.234:8080");
   const [ipConnected, setIpConnected] = useState(false);
   const [ipConnecting, setIpConnecting] = useState(false);
 
-  const FRAMES_PER_STEP = 8;
   const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : "";
 
@@ -148,36 +165,109 @@ function EnrollContent() {
       setError("Please connect to the IP camera first.");
       return;
     }
+
     setCapturing(true);
     setError("");
+    setFrameCount(0);
+    setCurrentStepAccepted(0);
+    setRejectReason(null);
+    setLastQuality(null);
+    setCurrentAttempts(0);
+    setStepAccepted(new Array(POSE_STEPS.length).fill(0));
 
     try {
       for (let s = 0; s < POSE_STEPS.length; s++) {
         setStep(s);
-        await new Promise((r) => setTimeout(r, 1500));
+        setCurrentStepAccepted(0);
+        setCurrentAttempts(0);
+        setRejectReason(null);
 
-        for (let f = 0; f < FRAMES_PER_STEP; f++) {
-          await new Promise((r) => setTimeout(r, 300));
+        // Give the student 2 seconds to move into the correct pose
+        await new Promise((r) => setTimeout(r, 2000));
+
+        let accepted = 0;
+        let attempts = 0;
+
+        // Keep capturing until enough frames are accepted for this step.
+        // The loop will NOT advance until MIN_ACCEPTED_PER_STEP good frames
+        // are confirmed by the server — so wrong poses are naturally blocked.
+        while (accepted < MIN_ACCEPTED_PER_STEP && attempts < MAX_ATTEMPTS_PER_STEP) {
+          attempts++;
+          setCurrentAttempts(attempts);
+          // 600 ms between captures — longer than 400 ms prevents motion-blur
+          // from the previous capture movement.
+          await new Promise((r) => setTimeout(r, 600));
+
           const frame = await captureFrame();
           if (!frame) continue;
 
-          await fetch(`${base}/api/enrollment/capture-frame`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              student_id: parseInt(inputId),
-              frame_b64: frame.split(",")[1],
-              step_index: s,
-            }),
-          }).catch(() => {});
+          try {
+            const res = await fetch(`${base}/api/enrollment/capture-frame`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                student_id: parseInt(inputId),
+                frame_b64: frame.split(",")[1],
+                step_index: s,
+              }),
+            });
 
-          setFrameCount((c) => c + 1);
+            // 401 = token expired — stop immediately, don't waste 60 attempts
+            if (res.status === 401) {
+              throw new Error("Session expired. Please log out and log in again, then retry enrollment.");
+            }
+
+            // Always try to parse JSON regardless of status code so we can
+            // surface a proper reason instead of silently counting as rejected.
+            let data: Record<string, unknown> = {};
+            try {
+              data = await res.json();
+            } catch {
+              // Binary/non-JSON response — treat as transient error, keep retrying
+              setRejectReason("Server error — retrying…");
+              continue;
+            }
+
+            if (data.accepted) {
+              accepted++;
+              setCurrentStepAccepted(accepted);
+              setRejectReason(null);
+              setLastQuality({
+                blur: data.blur_variance as number | undefined,
+                det: data.det_score as number | undefined,
+                yaw: data.yaw as number | undefined,
+                pitch: data.pitch as number | undefined,
+              });
+              setFrameCount((c) => c + 1);
+              setStepAccepted((prev) => {
+                const updated = [...prev];
+                updated[s] = accepted;
+                return updated;
+              });
+            } else {
+              // Server rejected this frame — show reason so student can correct pose
+              const reason = (data.reason as string) || "Frame not accepted";
+              setRejectReason(reason);
+            }
+          } catch {
+            // Network hiccup — keep retrying silently
+          }
+        }
+
+        if (accepted < MIN_ACCEPTED_PER_STEP) {
+          throw new Error(
+            `Pose "${POSE_STEPS[s].label}": could not capture ${MIN_ACCEPTED_PER_STEP} valid frames ` +
+            `after ${MAX_ATTEMPTS_PER_STEP} attempts. ` +
+            `Please ensure good lighting and that your face is fully visible.`
+          );
         }
       }
 
+      // All steps satisfied — finalize
+      setRejectReason(null);
       const res = await fetch(`${base}/api/enrollment/finalize`, {
         method: "POST",
         headers: {
@@ -298,23 +388,59 @@ function EnrollContent() {
               className="w-full h-full object-cover"
             />
           ) : (
-            <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+            <video
+              ref={videoRef}
+              autoPlay
+              muted
+              playsInline
+              className="w-full h-full object-cover"
+              style={{ transform: "scaleX(-1)" }}
+            />
           )}
           <canvas ref={canvasRef} className="hidden" />
 
-          {/* Overlay guide circle */}
+          {/* Overlay guide circle — turns red when last frame was rejected */}
           {capturing && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="border-4 border-blue-400 rounded-full w-48 h-48 opacity-60 animate-pulse" />
+              <div
+                className={`border-4 rounded-full w-48 h-48 opacity-60 animate-pulse ${
+                  rejectReason ? "border-red-400" : "border-blue-400"
+                }`}
+              />
             </div>
           )}
 
-          {/* Step label on video */}
-          {capturing && (
-            <div className="absolute bottom-4 left-0 right-0 text-center">
-              <span className="bg-black/70 text-white px-4 py-2 rounded-full text-sm">
-                {POSE_STEPS[step]?.emoji} {POSE_STEPS[step]?.label}
+          {/* Rejection banner — tells student exactly what's wrong */}
+          {capturing && rejectReason && (
+            <div className="absolute top-4 left-0 right-0 flex justify-center pointer-events-none">
+              <span className="bg-red-600/90 text-white px-4 py-2 rounded-full text-sm font-medium max-w-xs text-center">
+                ⚠️ {rejectReason}
               </span>
+            </div>
+          )}
+
+          {/* Scanning indicator — shown when no rejection but also no acceptance yet */}
+          {capturing && !rejectReason && currentStepAccepted === 0 && currentAttempts > 0 && (
+            <div className="absolute top-4 left-0 right-0 flex justify-center pointer-events-none">
+              <span className="bg-yellow-500/90 text-white px-4 py-2 rounded-full text-sm font-medium">
+                🔍 Scanning… ({currentAttempts}/{MAX_ATTEMPTS_PER_STEP})
+              </span>
+            </div>
+          )}
+
+          {/* Step label + per-step progress on video */}
+          {capturing && (
+            <div className="absolute bottom-4 left-0 right-0 text-center space-y-1">
+              <div>
+                <span className="bg-black/70 text-white px-4 py-2 rounded-full text-sm">
+                  {POSE_STEPS[step]?.emoji} {POSE_STEPS[step]?.label}
+                </span>
+              </div>
+              <div>
+                <span className="bg-black/50 text-white px-3 py-1 rounded-full text-xs">
+                  {currentStepAccepted} / {MIN_ACCEPTED_PER_STEP} frames accepted
+                </span>
+              </div>
             </div>
           )}
 
@@ -367,8 +493,24 @@ function EnrollContent() {
                   }`}
                 >
                   <span className="text-lg">{ps.emoji}</span>
-                  {ps.label}
-                  {capturing && i < step && <CheckCircle className="w-4 h-4 ml-auto text-green-500" />}
+                  <span className="flex-1">{ps.label}</span>
+
+                  {/* Completed step: show tick + count */}
+                  {capturing && i < step && (
+                    <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
+                      <CheckCircle className="w-4 h-4" />
+                      {stepAccepted[i]}/{MIN_ACCEPTED_PER_STEP}
+                    </span>
+                  )}
+
+                  {/* Active step: show live accepted/total */}
+                  {capturing && i === step && (
+                    <span className={`text-xs font-bold ${
+                      rejectReason ? "text-red-500" : "text-blue-600"
+                    }`}>
+                      {currentStepAccepted}/{MIN_ACCEPTED_PER_STEP}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -376,7 +518,16 @@ function EnrollContent() {
 
           {capturing && (
             <div className="text-center text-sm text-gray-500">
-              Collected <span className="font-bold text-blue-600">{frameCount}</span> high-quality frames
+              Collected{" "}
+              <span className="font-bold text-blue-600">{frameCount}</span> high-quality frames
+              {lastQuality?.blur !== undefined && (
+                <span className="ml-2 text-xs text-gray-400">
+                  (blur: {lastQuality.blur.toFixed(0)}
+                  {lastQuality.det !== undefined && `, det: ${lastQuality.det.toFixed(2)}`}
+                  {lastQuality.yaw !== undefined && `, yaw: ${lastQuality.yaw.toFixed(1)}°`}
+                  {lastQuality.pitch !== undefined && `, pitch: ${lastQuality.pitch.toFixed(1)}°`})
+                </span>
+              )}
             </div>
           )}
 
