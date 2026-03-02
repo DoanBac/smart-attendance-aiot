@@ -1122,21 +1122,92 @@ Admin password hash trong DB được tạo theo format cũ (không qua SHA256 p
 
 ---
 
-## 📊 Trạng thái hiện tại (Cập nhật 2026-03-02)
+### Session 2026-03-02 (phần 2)
+
+**Công việc đã hoàn thành:**
+
+#### 1. ✅ Tạo AI Face Inference Microservice (`ai-service/`, port 9000)
+
+**Vấn đề cũ**: InsightFace (~1GB model, CPU-heavy) chạy thẳng trong backend process → backend nặng, không thể scale AI riêng, khó test.
+
+**Giải pháp**: Tách InsightFace sang microservice riêng:
+
+```
+TRƯỚC:                          SAU:
+Backend (port 8000)             Backend (port 8000)
+  └─ InsightFace (1GB)    →       └─ httpx → AI Service (port 9000)
+  └─ Auth/DB/API                  └─ Auth/DB/API/AES
+                                AI Service (port 9000)
+                                  └─ InsightFace (1GB)
+                                  └─ ArcFace extract
+                                  └─ Cosine similarity
+```
+
+**Files tạo mới:**
+
+| File | Mô tả |
+|---|---|
+| `ai-service/Dockerfile` | Python 3.11-slim + build-essential + curl + libGL |
+| `ai-service/requirements.txt` | insightface, onnxruntime, opencv, httpx |
+| `ai-service/app/main.py` | FastAPI + non-blocking model warm-up |
+| `ai-service/app/config.py` | MODEL_NAME, SERVICE_SECRET_KEY, thresholds |
+| `ai-service/app/core/face_model.py` | InsightFace wrapper: extract_embedding(), batch_identify() |
+| `ai-service/app/api/routes/inference.py` | POST /api/v1/extract, POST /api/v1/identify |
+| `backend/app/services/ai_client.py` | httpx async client gọi ai-service |
+
+**API ai-service:**
+
+```
+POST /api/v1/extract          Header: X-Service-Key
+  Body: { image_b64, min_blur }
+  Resp: { embedding_b64, quality, meta }
+
+POST /api/v1/identify         Header: X-Service-Key
+  Body: { probe_b64, gallery: [{student_id, embedding_b64}], threshold }
+  Resp: { matched, student_id, confidence, top_matches }
+
+GET  /health
+  Resp: { status, model_loaded, uptime_seconds }
+```
+
+**Backend refactored:**
+- `face_service.py`: remove InsightFace, `extract_embedding()` → async, gọi `ai_client`
+- `identify_face()`: AES decrypt local → gửi plain embeddings sang ai-service
+- **AES key KHÔNG rời khỏi backend** — ai-service chỉ làm toán cosine
+- Local fallback cosine similarity khi ai-service down
+
+**docker-compose.yml**: thêm `ai-service` service, `backend` depends_on `ai-service (healthy)`
+
+#### 2. ✅ Fix non-blocking model warm-up
+
+InsightFace load trong background thread → uvicorn start ngay → healthcheck pass ngay.
+
+#### 3. ✅ Test end-to-end
+
+| Test | Kết quả |
+|---|---|
+| `GET http://localhost:9000/health` | ✅ model_loaded: true |
+| `GET http://localhost:8000/health` | ✅ healthy |
+| Login via backend | ✅ JWT token OK |
+| Backend → ai-service (internal Docker network) | ✅ Connected |
+
+---
+
+## 📊 Trạng thái hiện tại (Cập nhật 2026-03-02 phần 2)
 
 | Component | Status | Ghi chú |
 |---|---|---|
-| Backend API | ✅ Hoạt động | Tất cả endpoints tested |
+| Backend API | ✅ Hoạt động | Không còn InsightFace, gọi ai-service |
+| **AI Face Service** | ✅ **Hoạt động** | port 9000, InsightFace buffalo_sc, /extract + /identify |
 | PostgreSQL | ✅ Hoạt động | Có test data |
 | Redis | ✅ Hoạt động | Enrollment sessions |
 | Frontend | ✅ Build thành công | Toàn bộ UI tiếng Anh + IP Webcam |
-| JWT Auth | ✅ Fixed | Key cố định + dual-key decode trong security.py |
-| Enrollment Sessions | ✅ Fixed | Redis, TTL 30 phút |
-| Face Enrollment | ✅ Tested | IP Webcam flow hoạt động |
+| JWT Auth | ✅ Fixed | Key cố định + dual-key decode |
+| Face Enrollment | ✅ Refactored | Async, gọi ai-service /extract |
+| Face Identify | ✅ Refactored | AES decrypt local → ai-service /identify |
 | WebSocket | ✅ Fixed | prefix /ws, broadcast attendance |
 | Attendance REST | ✅ Tested | POST + GET hoạt động |
 | Edge Device | ⚠️ Code ready | Cần hardware để test |
-| Rate Limiter → Redis | ⚠️ Còn in-memory | Hoạt động nhưng không share multi-instance |
 | Alembic Migrations | ❌ Chưa | Vẫn dùng `create_all` tạm |
 
 ---
