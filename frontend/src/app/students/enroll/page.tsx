@@ -44,8 +44,8 @@ function EnrollContent() {
   const [stepAccepted, setStepAccepted] = useState<number[]>(new Array(POSE_STEPS.length).fill(0));
   // Last-frame rejection feedback
   const [rejectReason, setRejectReason] = useState<string | null>(null);
-  // Live quality debug info (blur variance of last accepted frame)
-  const [lastQuality, setLastQuality] = useState<{blur?: number; det?: number} | null>(null);
+  // Live quality debug info (blur, det_score, yaw, pitch of last accepted frame)
+  const [lastQuality, setLastQuality] = useState<{blur?: number; det?: number; yaw?: number; pitch?: number} | null>(null);
   // Current attempt counter for "still scanning" feedback
   const [currentAttempts, setCurrentAttempts] = useState(0);
 
@@ -233,6 +233,8 @@ function EnrollContent() {
               setLastQuality({
                 blur: data.blur_variance as number | undefined,
                 det: data.det_score as number | undefined,
+                yaw: data.yaw as number | undefined,
+                pitch: data.pitch as number | undefined,
               });
               setFrameCount((c) => c + 1);
               setStepAccepted((prev) => {
@@ -381,7 +383,14 @@ function EnrollContent() {
               className="w-full h-full object-cover"
             />
           ) : (
-            <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+            <video
+              ref={videoRef}
+              autoPlay
+              muted
+              playsInline
+              className="w-full h-full object-cover"
+              style={{ transform: "scaleX(-1)" }}
+            />
           )}
           <canvas ref={canvasRef} className="hidden" />
 
@@ -509,7 +518,9 @@ function EnrollContent() {
               {lastQuality?.blur !== undefined && (
                 <span className="ml-2 text-xs text-gray-400">
                   (blur: {lastQuality.blur.toFixed(0)}
-                  {lastQuality.det !== undefined && `, det: ${lastQuality.det.toFixed(2)}`})
+                  {lastQuality.det !== undefined && `, det: ${lastQuality.det.toFixed(2)}`}
+                  {lastQuality.yaw !== undefined && `, yaw: ${lastQuality.yaw.toFixed(1)}°`}
+                  {lastQuality.pitch !== undefined && `, pitch: ${lastQuality.pitch.toFixed(1)}°`})
                 </span>
               )}
             </div>

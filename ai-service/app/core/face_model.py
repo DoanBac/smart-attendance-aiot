@@ -61,6 +61,83 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
 
 
+# ── Head pose via solvePnP ───────────────────────────────────────────────────
+#
+# 3D reference model for InsightFace 5-point keypoints.
+# Order: [left_eye, right_eye, nose_tip, left_mouth, right_mouth]
+#
+# This is a CAMERA-CENTRIC model for a raw (unmirrored) front-facing webcam:
+#   +X = image right  → subject's LEFT eye is on image right, so placed at +X
+#   +Y = image down   → eyes are above nose (smaller Y), mouth below (+Y)
+#   +Z = depth        → nose is the closest feature (Z=0), rest are behind (+Z)
+#
+# Values in mm (approximate; scale only affects tvec, not rotation).
+_FACE_3D_POINTS = np.array(
+    [
+        [ 165.0, -170.0, 135.0],  # 0: left eye center   (image right, above nose)
+        [-165.0, -170.0, 135.0],  # 1: right eye center  (image left,  above nose)
+        [   0.0,    0.0,   0.0],  # 2: nose tip          (origin reference)
+        [ 150.0,  150.0, 125.0],  # 3: left mouth corner (image right, below nose)
+        [-150.0,  150.0, 125.0],  # 4: right mouth corner(image left,  below nose)
+    ],
+    dtype=np.float64,
+)
+
+
+def _estimate_pose_solvepnp(
+    kps: np.ndarray,
+    img_w: int,
+    img_h: int,
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """
+    Estimate head pose (yaw, pitch, roll) in degrees from 5 facial keypoints
+    using cv2.solvePnP with a camera-centric 3D face model.
+
+    Returns (yaw, pitch, roll) or (None, None, None) on failure.
+    """
+    try:
+        # Approximate camera intrinsics for a typical webcam
+        focal = float(img_w)
+        cx, cy = img_w / 2.0, img_h / 2.0
+        camera_matrix = np.array(
+            [[focal, 0.0, cx], [0.0, focal, cy], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        dist_coeffs = np.zeros((4, 1), dtype=np.float64)
+
+        image_points = np.array(kps[:5], dtype=np.float64)  # shape (5, 2)
+
+        ok, rvec, tvec = cv2.solvePnP(
+            _FACE_3D_POINTS,
+            image_points,
+            camera_matrix,
+            dist_coeffs,
+            flags=cv2.SOLVEPNP_EPNP,  # EPnP works with 4-5 points (ITERATIVE needs ≥6)
+        )
+        if not ok:
+            return None, None, None
+
+        # Rotation vector → rotation matrix
+        rmat, _ = cv2.Rodrigues(rvec)
+
+        # Decompose to Euler angles via projection matrix decomposition
+        # cv2.decomposeProjectionMatrix gives angles in the standard convention:
+        #   euler_angles[0] = pitch (X rotation)
+        #   euler_angles[1] = yaw   (Y rotation)
+        #   euler_angles[2] = roll  (Z rotation)
+        proj_matrix = np.hstack((rmat, tvec))
+        _, _, _, _, _, _, euler = cv2.decomposeProjectionMatrix(proj_matrix)
+        pitch_deg = round(float(euler[0][0]), 2)
+        yaw_deg   = round(float(euler[1][0]), 2)
+        roll_deg  = round(float(euler[2][0]), 2)
+
+        return yaw_deg, pitch_deg, roll_deg
+
+    except Exception as exc:
+        logger.debug("solvePnP failed: %s", exc)
+        return None, None, None
+
+
 # ── Core functions ────────────────────────────────────────────────────────────
 def extract_embedding(
     img_bytes: bytes,
@@ -121,21 +198,38 @@ def extract_embedding(
     blur_norm = min(1.0, blur_var / 500.0)  # 500 = ảnh rất sắc
     quality = round(0.6 * det_score + 0.4 * blur_norm, 4)
 
-    # ── Head pose estimation ──────────────────────────────────────────────────
-    # InsightFace computes pose from 5-point landmarks via solvePnP.
-    # face.pose = [pitch, yaw, roll] in degrees.
-    #   yaw  > 0 → head turned to subject's RIGHT  (camera sees left cheek)
-    #   yaw  < 0 → head turned to subject's LEFT   (camera sees right cheek)
-    #   pitch> 0 → head tilted DOWN (chin down)
-    #   pitch< 0 → head tilted UP   (chin up)
+    # ── Head pose estimation via solvePnP ─────────────────────────────────────
+    # buffalo_sc does NOT include a pose model (1k3d68.onnx), so face.pose is
+    # always None.  We compute yaw/pitch/roll ourselves using cv2.solvePnP with
+    # the 5 facial keypoints (face.kps) that the detection model always provides.
+    #
+    # Coordinate convention (camera-centric, raw webcam frame):
+    #   +X = image RIGHT   +Y = image DOWN   +Z = depth (away from camera)
+    #   Subject's LEFT eye appears on the image RIGHT → placed at +X in 3D model.
+    #   Subject's RIGHT eye appears on the image LEFT → placed at -X in 3D model.
+    #
+    # Sign convention for angles:
+    #   yaw   > 0 → face points to camera's RIGHT  = subject's physical LEFT
+    #   yaw   < 0 → face points to camera's LEFT   = subject's physical RIGHT
+    #   pitch > 0 → face tilts DOWN (chin toward chest)
+    #   pitch < 0 → face tilts UP   (chin raised)
+    #
+    # The enrollment frontend displays the video with CSS scaleX(-1) (mirror),
+    # so from the user's point of view:
+    #   "Turn LEFT"  → physical LEFT → yaw > 0 in raw frame
+    #   "Turn RIGHT" → physical RIGHT → yaw < 0 in raw frame
     yaw: Optional[float] = None
     pitch: Optional[float] = None
     roll: Optional[float] = None
+
+    # Prefer native pose if model supports it (buffalo_l / antelopev2)
     if hasattr(face, "pose") and face.pose is not None:
-        pose = face.pose  # shape (3,) or list
+        pose = face.pose
         pitch = round(float(pose[0]), 2)
         yaw   = round(float(pose[1]), 2)
         roll  = round(float(pose[2]), 2)
+    elif hasattr(face, "kps") and face.kps is not None and len(face.kps) >= 5:
+        yaw, pitch, roll = _estimate_pose_solvepnp(face.kps, w, h)
 
     meta = {
         "bbox": [float(x) for x in face.bbox],
@@ -143,7 +237,7 @@ def extract_embedding(
         "blur_variance": round(blur_var, 2),
         "image_size": [w, h],
         "face_area_ratio": round(face_area / img_area, 4),
-        # Head pose angles in degrees (None if model does not support pose)
+        # Head pose angles in degrees
         "yaw": yaw,
         "pitch": pitch,
         "roll": roll,

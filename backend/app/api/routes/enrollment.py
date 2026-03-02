@@ -42,40 +42,45 @@ _INF = float("inf")
 # model's values are smaller than expected.
 POSE_STEP_CONFIG = [
     # step 0 — Look straight
+    # Wide range to accommodate baseline solvePnP offset (~-10° pitch at neutral).
     {
         "instruction": "Please look straight at the camera",
-        "yaw_range":   (-15.0,  15.0),
-        "pitch_range": (-15.0,  15.0),
+        "yaw_range":   (-20.0,  20.0),
+        "pitch_range": (-20.0,  10.0),
     },
-    # step 1 — Turn head LEFT (subject's left → yaw < 0)
+    # step 1 — Turn head LEFT
+    # Mirror display (CSS scaleX -1): user turns physical LEFT.
+    # Raw frame: physical LEFT → image RIGHT → solvePnP gives yaw < 0 (verified).
+    # Requires a clear turn, not just a slight tilt.
     {
         "instruction": "Please turn your head to the LEFT",
-        "yaw_range":   (-_INF, -10.0),
-        "pitch_range": (-30.0,  30.0),
+        "yaw_range":   (-_INF, -20.0),
+        "pitch_range": (-35.0,  20.0),
     },
-    # step 2 — Turn head RIGHT (subject's right → yaw > 0)
+    # step 2 — Turn head RIGHT → yaw > 0 (verified: image LEFT → yaw > 0 sign)
     {
         "instruction": "Please turn your head to the RIGHT",
-        "yaw_range":   (10.0,  _INF),
-        "pitch_range": (-30.0,  30.0),
+        "yaw_range":   (20.0,  _INF),
+        "pitch_range": (-35.0,  20.0),
     },
-    # step 3 — Tilt UP (chin raised → pitch < 0)
+    # step 3 — Tilt UP (chin raised).
+    # Baseline neutral pitch ≈ -10°. Requiring < -22° ensures actual tilt.
     {
         "instruction": "Please tilt your head UP (raise your chin)",
-        "yaw_range":   (-25.0,  25.0),
-        "pitch_range": (-_INF, -8.0),
+        "yaw_range":   (-30.0,  30.0),
+        "pitch_range": (-_INF, -22.0),
     },
-    # step 4 — Tilt DOWN (chin down → pitch > 0)
+    # step 4 — Tilt DOWN (chin down → pitch becomes positive / larger positive).
     {
         "instruction": "Please tilt your head DOWN (lower your chin)",
-        "yaw_range":   (-25.0,  25.0),
-        "pitch_range": (8.0,   _INF),
+        "yaw_range":   (-30.0,  30.0),
+        "pitch_range": (5.0,   _INF),
     },
     # step 5 — Straight again (confirm)
     {
         "instruction": "Please look straight at the camera again",
-        "yaw_range":   (-15.0,  15.0),
-        "pitch_range": (-15.0,  15.0),
+        "yaw_range":   (-20.0,  20.0),
+        "pitch_range": (-20.0,  10.0),
     },
 ]
 
@@ -168,18 +173,13 @@ async def capture_frame(
         return {"accepted": False, "reason": reason, "buffered": 0}
 
     # ── Head pose validation ───────────────────────────────────────────────────
-    # buffalo_sc does NOT include a pose estimation model — face.pose is always
-    # None. _check_pose() returns (True, "") when yaw/pitch are None (degraded
-    # mode) so this block is effectively a no-op with the current model.
-    # When the model is upgraded to buffalo_l (which includes 3D landmark
-    # detection), pose validation will automatically activate.
     pose_ok, pose_reason = _check_pose(meta, data.step_index)
     if not pose_ok:
         logger.debug(
             "[enrollment] step=%d pose rejected — yaw=%.1f pitch=%.1f — %s",
             data.step_index,
-            meta.get("yaw", 0),
-            meta.get("pitch", 0),
+            meta.get("yaw") or 0,
+            meta.get("pitch") or 0,
             pose_reason,
         )
         return {
@@ -202,17 +202,20 @@ async def capture_frame(
     await redis.set(key, json.dumps(session), ex=ENROLLMENT_TTL_SECONDS)
 
     logger.debug(
-        "[enrollment] step=%d accepted — quality=%.3f blur=%.1f buffered=%d",
-        data.step_index, quality, meta.get("blur_variance", 0), len(session),
+        "[enrollment] step=%d accepted — quality=%.3f blur=%.1f yaw=%s pitch=%s buffered=%d",
+        data.step_index, quality, meta.get("blur_variance", 0),
+        meta.get("yaw"), meta.get("pitch"), len(session),
     )
 
     return {
         "accepted": True,
         "quality": round(quality, 4),
         "buffered": len(session),
-        # Debug fields — frontend can display these to help diagnose issues
+        # Debug fields — frontend displays these to help diagnose issues
         "blur_variance": meta.get("blur_variance"),
         "det_score": meta.get("det_score"),
+        "yaw": meta.get("yaw"),
+        "pitch": meta.get("pitch"),
     }
 
 
