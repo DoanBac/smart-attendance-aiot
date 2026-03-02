@@ -34,10 +34,14 @@ class Settings(BaseSettings):
     MQTT_PASSWORD: Optional[str] = None
     
     # Face Recognition
-    MODEL_STORAGE_PATH: str = "/app/models"      # ← giữ 1 cái duy nhất
+    MODEL_STORAGE_PATH: str = "/app/models"
     COSINE_SIMILARITY_THRESHOLD: float = 0.65
     MAX_FACE_DISTANCE: float = 0.35
-    
+
+    # AI Face Inference Microservice
+    AI_SERVICE_URL: str = "http://ai-service:9000"   # internal Docker network
+    AI_SERVICE_SECRET_KEY: str = "ai-service-internal-secret-change-in-prod"
+
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 100
     

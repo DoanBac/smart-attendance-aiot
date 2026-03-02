@@ -22,6 +22,24 @@ services:
     volumes:
       - redis_data:/data
 
+  ai-service:
+    build: ./ai-service
+    ports:
+      - "9000:9000"
+    environment:
+      MODEL_STORAGE_PATH: /app/models
+      MODEL_NAME: buffalo_sc
+      SERVICE_SECRET_KEY: ai-service-internal-secret-change-in-prod
+      COSINE_THRESHOLD: "0.65"
+    volumes:
+      - insightface_models:/app/models   # share model cache với backend (nếu cần)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s   # InsightFace download model lần đầu mất ~2 phút
+
   backend:
     build: ./backend
     ports:
@@ -30,6 +48,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://doanbac07:070301@postgres:5432/attendance_db
       REDIS_URL: redis://redis:6379/0
       MODEL_STORAGE_PATH: /app/models
+      AI_SERVICE_URL: http://ai-service:9000
+      AI_SERVICE_SECRET_KEY: ai-service-internal-secret-change-in-prod
     env_file:
       - ./backend/.env
     volumes:
@@ -39,6 +59,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      ai-service:
+        condition: service_healthy
 
   frontend:
     build: ./frontend

@@ -51,7 +51,7 @@ async def capture_frame(
         raise HTTPException(status_code=400, detail="Invalid frame_b64")
 
     try:
-        emb, quality, meta = face_service.extract_embedding(
+        emb, quality, meta = await face_service.extract_embedding(
             img_bytes,
             angle="center",
             min_blur=60.0,

@@ -1,53 +1,32 @@
 """
-Cloud-side face service theo Paper:
-- Detection: RetinaFace ONNX (InsightFace)
-- Embedding: ArcFace ONNX 512-dim
-- Encryption: AES-256-GCM
-- Enrollment: 5 góc weighted average → 1 master embedding
-- Verify: Cosine Similarity ≥ 0.65
+Cloud-side Face Service — Backend layer.
+
+Kiến trúc microservice (sau khi tách AI Face Service):
+  Backend (port 8000)  → auth, DB, business logic, AES encryption
+  AI Service (port 9000) → InsightFace inference, cosine similarity
+
+Backend gọi AI Service qua HTTP (ai_client.py).
+AES key KHÔNG rời khỏi backend process.
 """
 import os
-import io
 import base64
 import logging
 import numpy as np
 from typing import Tuple, List, Optional
 
-import cv2
-from PIL import Image
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.config import settings
 from app.models.student import Student
+from app.services.ai_client import ai_extract_embedding, ai_identify
 
 logger = logging.getLogger(__name__)
 
 
-# ── InsightFace lazy init ─────────────────────────────────────────────────────
-_face_app = None
-
-def get_face_app():
-    global _face_app
-    if _face_app is None:
-        try:
-            import insightface
-            _face_app = insightface.app.FaceAnalysis(
-                name="buffalo_sc",
-                root=settings.MODEL_STORAGE_PATH,
-                providers=["CPUExecutionProvider"]
-            )
-            _face_app.prepare(ctx_id=0, det_size=(640, 640))
-            logger.info("InsightFace loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load InsightFace: {e}")
-            raise
-    return _face_app
-
-
 # ══════════════════════════════════════════════════════════════════════
-#  Crypto helpers - AES-256-GCM (Secure Enclave equivalent)
+#  AES-256-GCM — Embedding Encryption (Paper Section 6)
 # ══════════════════════════════════════════════════════════════════════
 def _get_aes_key() -> bytes:
     return bytes.fromhex(settings.AES_KEY)
@@ -64,120 +43,29 @@ def decrypt_embedding(data: bytes) -> np.ndarray:
     return np.frombuffer(raw, dtype=np.float32).copy()
 
 def cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
-    """Cosine similarity - Paper Section 5.3"""
+    """Cosine similarity — dùng cho local fallback khi ai-service down."""
     v1 = v1 / (np.linalg.norm(v1) + 1e-10)
     v2 = v2 / (np.linalg.norm(v2) + 1e-10)
     return float(np.dot(v1, v2))
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  Liveness Detection - Paper Section 4
-# ══════════════════════════════════════════════════════════════════════
-class LivenessChecker:
-    """
-    Liveness Detection 3 tầng:
-    Tầng 1: Blink Detection (EAR)       - 40%
-    Tầng 2: Head Pose Estimation (PnP)  - 35%
-    Tầng 3: Depth score                 - 25%
-    """
-
-    EAR_THRESHOLD = 0.25
-
-    FACE_3D_MODEL = np.array([
-        [0.0,    0.0,    0.0   ],  # Mũi
-        [0.0,   -330.0, -65.0 ],  # Cằm
-        [-225.0, 170.0, -135.0],  # Khóe mắt trái
-        [225.0,  170.0, -135.0],  # Khóe mắt phải
-        [-150.0,-150.0, -125.0],  # Khóe miệng trái
-        [150.0, -150.0, -125.0],  # Khóe miệng phải
-    ], dtype=np.float64)
-
-    def compute_ear(self, eye_landmarks: np.ndarray) -> float:
-        """EAR = (||p2-p6|| + ||p3-p5||) / (2 × ||p1-p4||)"""
-        p1, p2, p3, p4, p5, p6 = eye_landmarks
-        v1 = np.linalg.norm(p2 - p6)
-        v2 = np.linalg.norm(p3 - p5)
-        h  = np.linalg.norm(p1 - p4)
-        return (v1 + v2) / (2.0 * h + 1e-6)
-
-    def check_blink(self, ear_history: List[float]) -> bool:
-        """Pattern: cao → thấp → cao = 1 lần chớp mắt"""
-        if len(ear_history) < 3:
-            return False
-        for i in range(1, len(ear_history) - 1):
-            if (ear_history[i]     < self.EAR_THRESHOLD and
-                ear_history[i - 1] >= self.EAR_THRESHOLD and
-                ear_history[i + 1] >= self.EAR_THRESHOLD):
-                return True
-        return False
-
-    def estimate_head_pose(
-        self, landmarks_2d: np.ndarray, img_w: int, img_h: int
-    ) -> Tuple[float, float, float]:
-        """PnP → yaw, pitch, roll"""
-        focal  = float(img_w)
-        cam_mat = np.array([
-            [focal, 0, img_w / 2],
-            [0, focal, img_h / 2],
-            [0, 0, 1],
-        ], dtype=np.float64)
-        ok, rvec, _ = cv2.solvePnP(
-            self.FACE_3D_MODEL,
-            landmarks_2d.astype(np.float64),
-            cam_mat,
-            np.zeros((4, 1)),
-            flags=cv2.SOLVEPNP_ITERATIVE,
-        )
-        if not ok:
-            return 0.0, 0.0, 0.0
-        rmat, _ = cv2.Rodrigues(rvec)
-        angles, *_ = cv2.RQDecomp3x3(rmat)
-        return float(angles[1]), float(angles[0]), float(angles[2])
-
-    def check_head_movement(
-        self, pose_history: List[Tuple[float, float, float]], angle: str
-    ) -> bool:
-        if len(pose_history) < 5:
-            return False
-        yaws   = [p[0] for p in pose_history]
-        pitchs = [p[1] for p in pose_history]
-        return (
-            (angle == "left"  and max(yaws)   >  20) or
-            (angle == "right" and min(yaws)   < -20) or
-            (angle == "up"    and min(pitchs) < -15) or
-            (angle == "down"  and max(pitchs) >  15)
-        )
-
-    def estimate_liveness_score(
-        self, blink_detected: bool, head_moved: bool, depth_score: float = 1.0
-    ) -> float:
-        score = 0.0
-        if blink_detected: score += 0.40
-        if head_moved:     score += 0.35
-        score += depth_score * 0.25
-        return min(score, 1.0)
+# NOTE: LivenessChecker chạy trên Edge Device (edge/src/ai/liveness/)
+# Backend không cần chạy liveness — đó là việc của edge.
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  FaceService - Pipeline chính theo Paper Section 5
+#  FaceService — Business logic layer (no AI inference here)
 # ══════════════════════════════════════════════════════════════════════
 class FaceService:
     """
-    Enrollment pipeline:
-      5 góc ảnh → RetinaFace detect → ArcFace 512-dim
-      → weighted average → AES-256-GCM encrypt → DB
+    Enrollment pipeline (browser webcam):
+      JPEG bytes → POST ai-service /extract → embedding 512-dim
+      → buffer in Redis → weighted average → AES-encrypt → DB
 
-    Verify pipeline:
-      1 ảnh → ArcFace 512-dim → cosine similarity ≥ 0.65 → MATCH
+    Identify pipeline (edge device → cloud):
+      probe embedding_b64 → decrypt gallery (AES, local)
+      → POST ai-service /identify → (student_id, confidence)
     """
-
-    ANGLE_INSTRUCTIONS = {
-        "center": "Nhìn thẳng vào camera",
-        "left":   "Từ từ xoay mặt sang TRÁI (~30°)",
-        "right":  "Từ từ xoay mặt sang PHẢI (~30°)",
-        "up":     "Từ từ ngẩng mặt lên TRÊN (~20°)",
-        "down":   "Từ từ cúi mặt xuống DƯỚI (~20°)",
-    }
 
     ANGLE_WEIGHTS = {
         "center": 2.0,
@@ -188,106 +76,34 @@ class FaceService:
     }
 
     def __init__(self):
-        self._face_app = None
-        self._liveness = LivenessChecker()
+        pass  # No local model — InsightFace runs in ai-service
 
     # ---------------------------------------------------------------- #
-    #  Load InsightFace (lazy)                                          #
+    #  extract_embedding — Enrollment (gọi ai-service)               #
     # ---------------------------------------------------------------- #
-    def _get_app(self):
-        if self._face_app is None:
-            try:
-                from insightface.app import FaceAnalysis
-                import onnxruntime as ort
-
-                opts = ort.SessionOptions()
-                opts.intra_op_num_threads = 4
-                opts.graph_optimization_level = (
-                    ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                )
-
-                self._face_app = FaceAnalysis(
-                    name      = "buffalo_sc",
-                    root      = settings.MODEL_STORAGE_PATH,
-                    providers = ["CPUExecutionProvider"],
-                )
-                # 320×320 tối ưu RPi - Paper Section 8.2
-                self._face_app.prepare(ctx_id=0, det_size=(320, 320))
-                logger.info("✅ InsightFace: RetinaFace + ArcFace loaded")
-            except Exception as e:
-                logger.error(f"❌ InsightFace load failed: {e}")
-                raise RuntimeError(f"Face engine unavailable: {e}")
-        return self._face_app
-
-    # ---------------------------------------------------------------- #
-    #  Blur check - Paper Section 3.2                                   #
-    # ---------------------------------------------------------------- #
-    def _check_blur(self, img_np: np.ndarray) -> float:
-        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
-
-    # ---------------------------------------------------------------- #
-    #  Core: Image → ArcFace Embedding                                  #
-    # ---------------------------------------------------------------- #
-    def extract_embedding(
+    async def extract_embedding(
         self,
         image_bytes: bytes,
         angle: str = "center",
-        min_blur: float = 100.0,
+        min_blur: float = 60.0,
     ) -> Tuple[np.ndarray, float, dict]:
         """
-        RetinaFace detect → ArcFace 512-dim embedding
-        Returns: (l2_normalized_embedding, quality_score, meta)
+        Nhận raw JPEG bytes, gọi ai-service để extract ArcFace embedding.
+        Returns: (embedding 512-dim, quality_score, meta)
         """
-        try:
-            img_pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            img_np  = np.array(img_pil)
-        except Exception:
-            raise ValueError("File ảnh không hợp lệ")
-
-        blur = self._check_blur(img_np)
-        if angle == "center" and blur < min_blur:
-            raise ValueError(
-                f"Ảnh bị mờ (score={blur:.1f}). Đảm bảo đủ sáng và giữ yên camera"
-            )
-
-        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-        faces   = self._get_app().get(img_bgr)
-
-        if len(faces) == 0:
-            raise ValueError(
-                f"Không phát hiện khuôn mặt ở góc '{angle}'. "
-                "Đảm bảo đủ sáng, nhìn vào camera"
-            )
-        if len(faces) > 1:
-            raise ValueError(
-                f"Phát hiện {len(faces)} khuôn mặt. Chỉ 1 người khi đăng ký"
-            )
-
-        face     = faces[0]
-        quality  = float(face.det_score)
-        min_conf = 0.5 if angle == "center" else 0.35
-
-        if quality < min_conf:
-            raise ValueError(
-                f"Góc '{angle}': chất lượng thấp ({quality:.2f}). Cần đủ sáng hơn"
-            )
-
-        embedding = face.normed_embedding.copy()   # 512-dim, đã L2 normalize
-
-        meta = {
-            "quality_score": quality,
-            "blur_score":    round(blur, 1),
-            "bbox":          [round(x, 1) for x in face.bbox.tolist()],
-            "embedding_dim": len(embedding),
-            "landmarks":     face.kps.tolist() if face.kps is not None else [],
-        }
-
-        logger.info(f"[EXTRACT] angle={angle} det={quality:.3f} blur={blur:.1f}")
+        image_b64 = base64.b64encode(image_bytes).decode()
+        embedding, quality, meta = await ai_extract_embedding(
+            image_b64=image_b64,
+            min_blur=min_blur,
+        )
+        logger.info(
+            f"[EXTRACT] angle={angle} quality={quality:.3f} "
+            f"blur={meta.get('blur_variance', '?')}"
+        )
         return embedding, quality, meta
 
     # ---------------------------------------------------------------- #
-    #  Fuse 5 góc → 1 master embedding - Paper Section 3.1             #
+    #  fuse_embeddings — Multi-frame weighted average (Paper 3.1)      #
     # ---------------------------------------------------------------- #
     def fuse_embeddings(
         self,
@@ -295,15 +111,15 @@ class FaceService:
         angles:     List[str],
         qualities:  List[float],
     ) -> Tuple[np.ndarray, float]:
-        weighted_sum = np.zeros_like(embeddings[0])
+        weighted_sum = np.zeros_like(embeddings[0], dtype=np.float64)
         total_w      = 0.0
 
         for emb, angle, qual in zip(embeddings, angles, qualities):
             w             = self.ANGLE_WEIGHTS.get(angle, 1.0) * qual
-            weighted_sum += w * emb
+            weighted_sum += w * emb.astype(np.float64)
             total_w      += w
 
-        master = weighted_sum / total_w
+        master = (weighted_sum / total_w).astype(np.float32)
         norm   = np.linalg.norm(master)
         if norm > 0:
             master = master / norm   # Re-normalize L2
@@ -325,27 +141,27 @@ class FaceService:
         return encrypt_embedding(master), avg_q
 
     # ---------------------------------------------------------------- #
-    #  Verify - Paper Section 5.3                                       #
+    #  verify — single image vs 1 encrypted embedding (async now)      #
     # ---------------------------------------------------------------- #
-    def verify(
+    async def verify(
         self,
         image_bytes:         bytes,
         encrypted_embedding: bytes,
         threshold:           float = None,
     ) -> Tuple[bool, float]:
-        """Cosine similarity ≥ 0.65 → MATCH"""
+        """Cosine similarity ≥ 0.65 → MATCH (gọi ai-service)"""
         threshold = threshold or settings.COSINE_SIMILARITY_THRESHOLD
-
         try:
-            new_emb, _, _ = self.extract_embedding(image_bytes, "center")
+            new_emb, _, _ = await self.extract_embedding(image_bytes, "center")
         except (ValueError, RuntimeError) as e:
             logger.warning(f"[VERIFY] Failed: {e}")
             return False, 0.0
 
-        stored     = decrypt_embedding(encrypted_embedding)
-        sim        = cosine_similarity(new_emb, stored)
-        is_match   = sim >= threshold
-
+        stored   = decrypt_embedding(encrypted_embedding)
+        gallery  = [(0, stored)]
+        result   = await ai_identify(new_emb, gallery, threshold=threshold)
+        sim      = result["confidence"]
+        is_match = result["matched"]
         logger.info(f"[VERIFY] sim={sim:.4f} threshold={threshold} match={is_match}")
         return is_match, sim
 
@@ -381,8 +197,8 @@ class FaceService:
         class_id:            Optional[int] = None,
     ) -> Tuple[Optional[int], float]:
         """
-        So khớp embedding từ ESP32 vs tất cả sinh viên trong lớp.
-        Returns: (student_id, similarity) hoặc (None, score)
+        So khớp probe embedding (từ Edge) vs gallery trong DB.
+        Flow: fetch DB → AES decrypt (local) → POST ai-service /identify
         """
         raw       = base64.b64decode(query_embedding_b64)
         query_vec = np.frombuffer(raw, dtype=np.float32).copy()
@@ -398,26 +214,43 @@ class FaceService:
         result   = await db.execute(stmt)
         students = result.scalars().all()
 
-        best_id    : Optional[int] = None
-        best_score : float         = 0.0
+        if not students:
+            return None, 0.0
 
+        # Decrypt embeddings — AES key chỉ trong backend process
+        gallery: List[Tuple[int, np.ndarray]] = []
         for student in students:
             try:
-                stored = decrypt_embedding(student.face_embedding)
-                sim    = cosine_similarity(query_vec, stored)
-                if sim > best_score:
-                    best_score = sim
-                    best_id    = student.id
-            except Exception:
-                continue
+                plain = decrypt_embedding(student.face_embedding)
+                gallery.append((student.id, plain))
+            except Exception as e:
+                logger.warning(f"[IDENTIFY] Decrypt failed student_id={student.id}: {e}")
+
+        if not gallery:
+            return None, 0.0
 
         threshold = settings.COSINE_SIMILARITY_THRESHOLD
-        if best_score >= threshold:
-            return best_id, best_score
-        return None, best_score
+        try:
+            res = await ai_identify(query_vec, gallery, threshold=threshold)
+        except RuntimeError as e:
+            logger.error(f"[IDENTIFY] ai-service error, using local fallback: {e}")
+            # Fallback: local numpy cosine khi ai-service down
+            best_id, best_score = None, 0.0
+            for sid, emb in gallery:
+                sim = cosine_similarity(query_vec, emb)
+                if sim > best_score:
+                    best_score, best_id = sim, sid
+            return (best_id if best_score >= threshold else None), best_score
 
-    def get_liveness_checker(self) -> LivenessChecker:
-        return self._liveness
+        matched    = res["matched"]
+        student_id = res.get("student_id")
+        confidence = res.get("confidence", 0.0)
+        logger.info(f"[IDENTIFY] matched={matched} sid={student_id} conf={confidence:.4f}")
+        return (student_id if matched else None), confidence
+
+    def get_liveness_checker(self):
+        """Liveness runs on Edge. This stub exists for backward compat."""
+        return None
 
 
 # Singleton
