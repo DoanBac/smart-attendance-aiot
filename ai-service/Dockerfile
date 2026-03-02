@@ -1,7 +1,13 @@
 FROM python:3.11-slim-bookworm
 
-# System deps: libGL for OpenCV, libgomp for onnxruntime
+# System deps:
+# - build-essential + g++: compiling insightface C extensions
+# - libGL + libglib: OpenCV runtime
+# - libgomp: onnxruntime parallel ops
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    g++ \
+    curl \
     libgl1 \
     libglib2.0-0 \
     libgomp1 \

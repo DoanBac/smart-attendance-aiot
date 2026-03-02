@@ -11,6 +11,8 @@ Không expose ra internet trực tiếp.
 """
 import logging
 import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -27,22 +29,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _startup_time = time.time()
+_model_executor = ThreadPoolExecutor(max_workers=1)
+
+
+def _load_model_sync():
+    """Load InsightFace in a separate thread — không block event loop."""
+    logger.info("🔄 Loading InsightFace model in background thread...")
+    get_face_app()
+    logger.info("✅ InsightFace model ready")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Warm-up InsightFace model on startup — tránh cold-start khi request đầu tiên đến."""
-    logger.info("🚀 AI Service starting up — pre-loading InsightFace model...")
-    try:
-        get_face_app()   # trigger lazy init ngay khi boot
-        logger.info("✅ InsightFace model ready")
-    except Exception as e:
-        logger.error(f"❌ Failed to pre-load InsightFace: {e}")
-        # Không crash — model có thể load lại ở request đầu tiên
+    """
+    Server khởi động ngay lập tức (health endpoint ready).
+    InsightFace warm-up chạy trong background thread — không block.
+    """
+    logger.info("🚀 AI Service starting — server ready, model loading in background")
+    loop = asyncio.get_event_loop()
+    # Non-blocking model load — uvicorn accepts requests ngay lập tức
+    loop.run_in_executor(_model_executor, _load_model_sync)
 
     yield
 
     logger.info("AI Service shutting down")
+    _model_executor.shutdown(wait=False)
 
 
 app = FastAPI(
