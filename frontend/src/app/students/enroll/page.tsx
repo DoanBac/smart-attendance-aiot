@@ -13,6 +13,12 @@ const POSE_STEPS = [
   { label: "Look straight (confirm)", emoji: "✅" },
 ];
 
+// Minimum accepted frames required before moving to the next pose step.
+// System will keep retrying until this many frames are accepted or
+// MAX_ATTEMPTS_PER_STEP is reached.
+const MIN_ACCEPTED_PER_STEP = 5;
+const MAX_ATTEMPTS_PER_STEP = 30;
+
 type CameraMode = "local" | "ip";
 
 function EnrollContent() {
@@ -31,12 +37,17 @@ function EnrollContent() {
   const [error, setError] = useState("");
   const [inputId, setInputId] = useState(studentId);
 
+  // Per-step acceptance tracking
+  const [currentStepAccepted, setCurrentStepAccepted] = useState(0);
+  const [stepAccepted, setStepAccepted] = useState<number[]>(new Array(POSE_STEPS.length).fill(0));
+  // Last-frame rejection feedback
+  const [rejectReason, setRejectReason] = useState<string | null>(null);
+
   const [cameraMode, setCameraMode] = useState<CameraMode>("local");
   const [ipUrl, setIpUrl] = useState("http://192.168.123.234:8080");
   const [ipConnected, setIpConnected] = useState(false);
   const [ipConnecting, setIpConnecting] = useState(false);
 
-  const FRAMES_PER_STEP = 8;
   const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : "";
 
@@ -148,36 +159,82 @@ function EnrollContent() {
       setError("Please connect to the IP camera first.");
       return;
     }
+
     setCapturing(true);
     setError("");
+    setFrameCount(0);
+    setCurrentStepAccepted(0);
+    setRejectReason(null);
+    setStepAccepted(new Array(POSE_STEPS.length).fill(0));
 
     try {
       for (let s = 0; s < POSE_STEPS.length; s++) {
         setStep(s);
-        await new Promise((r) => setTimeout(r, 1500));
+        setCurrentStepAccepted(0);
+        setRejectReason(null);
 
-        for (let f = 0; f < FRAMES_PER_STEP; f++) {
-          await new Promise((r) => setTimeout(r, 300));
+        // Give the student 2 seconds to move into the correct pose
+        await new Promise((r) => setTimeout(r, 2000));
+
+        let accepted = 0;
+        let attempts = 0;
+
+        // Keep capturing until enough frames are accepted for this step.
+        // The loop will NOT advance until MIN_ACCEPTED_PER_STEP good frames
+        // are confirmed by the server — so wrong poses are naturally blocked.
+        while (accepted < MIN_ACCEPTED_PER_STEP && attempts < MAX_ATTEMPTS_PER_STEP) {
+          attempts++;
+          await new Promise((r) => setTimeout(r, 400));
+
           const frame = await captureFrame();
           if (!frame) continue;
 
-          await fetch(`${base}/api/enrollment/capture-frame`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              student_id: parseInt(inputId),
-              frame_b64: frame.split(",")[1],
-              step_index: s,
-            }),
-          }).catch(() => {});
+          try {
+            const res = await fetch(`${base}/api/enrollment/capture-frame`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                student_id: parseInt(inputId),
+                frame_b64: frame.split(",")[1],
+                step_index: s,
+              }),
+            });
 
-          setFrameCount((c) => c + 1);
+            const data = await res.json();
+
+            if (data.accepted) {
+              accepted++;
+              setCurrentStepAccepted(accepted);
+              setRejectReason(null);
+              setFrameCount((c) => c + 1);
+              setStepAccepted((prev) => {
+                const updated = [...prev];
+                updated[s] = accepted;
+                return updated;
+              });
+            } else {
+              // Server rejected this frame — show reason so student can correct pose
+              setRejectReason(data.reason || "Frame not clear enough");
+            }
+          } catch {
+            // Network hiccup — keep retrying
+          }
+        }
+
+        if (accepted < MIN_ACCEPTED_PER_STEP) {
+          throw new Error(
+            `Pose "${POSE_STEPS[s].label}": could not capture ${MIN_ACCEPTED_PER_STEP} valid frames ` +
+            `after ${MAX_ATTEMPTS_PER_STEP} attempts. ` +
+            `Please ensure good lighting and that your face is fully visible.`
+          );
         }
       }
 
+      // All steps satisfied — finalize
+      setRejectReason(null);
       const res = await fetch(`${base}/api/enrollment/finalize`, {
         method: "POST",
         headers: {
@@ -302,19 +359,39 @@ function EnrollContent() {
           )}
           <canvas ref={canvasRef} className="hidden" />
 
-          {/* Overlay guide circle */}
+          {/* Overlay guide circle — turns red when last frame was rejected */}
           {capturing && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="border-4 border-blue-400 rounded-full w-48 h-48 opacity-60 animate-pulse" />
+              <div
+                className={`border-4 rounded-full w-48 h-48 opacity-60 animate-pulse ${
+                  rejectReason ? "border-red-400" : "border-blue-400"
+                }`}
+              />
             </div>
           )}
 
-          {/* Step label on video */}
-          {capturing && (
-            <div className="absolute bottom-4 left-0 right-0 text-center">
-              <span className="bg-black/70 text-white px-4 py-2 rounded-full text-sm">
-                {POSE_STEPS[step]?.emoji} {POSE_STEPS[step]?.label}
+          {/* Rejection banner — tells student exactly what's wrong */}
+          {capturing && rejectReason && (
+            <div className="absolute top-4 left-0 right-0 flex justify-center pointer-events-none">
+              <span className="bg-red-600/90 text-white px-4 py-2 rounded-full text-sm font-medium">
+                ⚠️ {rejectReason} — adjust and hold still
               </span>
+            </div>
+          )}
+
+          {/* Step label + per-step progress on video */}
+          {capturing && (
+            <div className="absolute bottom-4 left-0 right-0 text-center space-y-1">
+              <div>
+                <span className="bg-black/70 text-white px-4 py-2 rounded-full text-sm">
+                  {POSE_STEPS[step]?.emoji} {POSE_STEPS[step]?.label}
+                </span>
+              </div>
+              <div>
+                <span className="bg-black/50 text-white px-3 py-1 rounded-full text-xs">
+                  {currentStepAccepted} / {MIN_ACCEPTED_PER_STEP} frames accepted
+                </span>
+              </div>
             </div>
           )}
 
@@ -367,8 +444,24 @@ function EnrollContent() {
                   }`}
                 >
                   <span className="text-lg">{ps.emoji}</span>
-                  {ps.label}
-                  {capturing && i < step && <CheckCircle className="w-4 h-4 ml-auto text-green-500" />}
+                  <span className="flex-1">{ps.label}</span>
+
+                  {/* Completed step: show tick + count */}
+                  {capturing && i < step && (
+                    <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
+                      <CheckCircle className="w-4 h-4" />
+                      {stepAccepted[i]}/{MIN_ACCEPTED_PER_STEP}
+                    </span>
+                  )}
+
+                  {/* Active step: show live accepted/total */}
+                  {capturing && i === step && (
+                    <span className={`text-xs font-bold ${
+                      rejectReason ? "text-red-500" : "text-blue-600"
+                    }`}>
+                      {currentStepAccepted}/{MIN_ACCEPTED_PER_STEP}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
