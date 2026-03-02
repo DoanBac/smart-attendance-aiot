@@ -215,6 +215,11 @@ function EnrollContent() {
               }),
             });
 
+            // 401 = token expired — stop immediately, don't waste 60 attempts
+            if (res.status === 401) {
+              throw new Error("Session expired. Please log out and log in again, then retry enrollment.");
+            }
+
             // Always try to parse JSON regardless of status code so we can
             // surface a proper reason instead of silently counting as rejected.
             let data: Record<string, unknown> = {};

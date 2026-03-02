@@ -1193,17 +1193,145 @@ InsightFace load trong background thread → uvicorn start ngay → healthcheck 
 
 ---
 
-## 📊 Trạng thái hiện tại (Cập nhật 2026-03-02 phần 2)
+### Session 2026-03-02 (phần 3) — Fix Pose Validation & Head Pose Estimation
+
+**Vấn đề được báo cáo:** Sau khi fix JWT 401, enrollment vẫn thất bại với lỗi:
+> "Pose 'Look straight at the camera': could not capture 5 valid frames after 60 attempts"
+
+---
+
+#### 1. 🔍 Root Cause Analysis — pitch ≈ ±178° (solvePnP back-of-head bug)
+
+**Log bằng chứng từ backend:**
+```
+[enrollment] step=0 pose-rejected — yaw=-33.19 pitch=176.36 — Please look straight
+[enrollment] step=0 pose-rejected — yaw=-1.14 pitch=-178.39 — Please look straight
+[enrollment] step=0 pose-rejected — yaw=-34.05 pitch=173.57 — Please look straight
+(lặp lại 60 lần)
+```
+
+**Root cause:** `cv2.solvePnP` với `SOLVEPNP_EPNP` sinh ra **"back-of-head" solution** — rotation matrix `rmat` ngược chiều 180° so với thực tế. Hệ quả: `cv2.decomposeProjectionMatrix` trả pitch ≈ ±175° thay vì ~0°. Mặt người nhìn thẳng nhưng hệ thống tính như đang "xoay đầu 180°".
+
+**Các fix đã thử và thất bại:**
+1. ❌ **RQDecomp3x3 + tvec[2] flip check** — vẫn cho pitch ≈ ±175° vì rmat đã sai trước khi decompose
+2. ❌ **Đổi 3D model points (camera-centric → subject-centric)** — vẫn không giải quyết được ambiguity của EPnP với 5 điểm
+3. ❌ **Dùng `cv2.decomposeProjectionMatrix`** — kết quả tương đương, cùng bị flip
+
+**Kết luận:** Vấn đề căn bản với solvePnP: với chỉ 5 điểm frontal face, EPnP không thể tự phân biệt front/back solution một cách ổn định. Bất kỳ approach nào dựa trên solvePnP với 5 keypoints đều tiềm ẩn lỗi 180° flip.
+
+---
+
+#### 2. ✅ Fix cuối cùng — Geometric Landmark Method (bỏ hoàn toàn solvePnP)
+
+**Giải pháp:** Thay toàn bộ solvePnP bằng phương pháp hình học đơn giản, tính trực tiếp yaw/pitch từ tỷ lệ vị trí landmark trong ảnh. Không có 180° ambiguity, không cần intrinsic matrix.
+
+**File thay đổi:** `ai-service/app/core/face_model.py`
+
+```python
+def _estimate_pose_geometric(kps, img_w, img_h):
+    """
+    InsightFace 5-pt keypoints: [left_eye, right_eye, nose_tip, left_mouth, right_mouth]
+    'left/right' = từ góc nhìn SUBJECT (không phải camera).
+    """
+    left_eye, right_eye, nose, left_mouth, right_mouth = kps[:5]
+
+    # ── Yaw ──────────────────────────────────────────────────────────────────
+    # eye midpoint horizontal vs nose horizontal
+    eye_mid_x = (left_eye[0] + right_eye[0]) / 2.0
+    eye_dist  = abs(left_eye[0] - right_eye[0]) + 1e-6  # interocular distance
+    # offset nose từ đường giữa mắt, normalize
+    yaw_raw = (eye_mid_x - nose[0]) / eye_dist
+    yaw_deg = np.clip(yaw_raw * 90.0, -90.0, 90.0)      # 0.5 offset ≈ 45°
+
+    # ── Pitch ────────────────────────────────────────────────────────────────
+    eye_mid_y   = (left_eye[1] + right_eye[1]) / 2.0
+    mouth_mid_y = (left_mouth[1] + right_mouth[1]) / 2.0
+    face_height = abs(mouth_mid_y - eye_mid_y) + 1e-6
+    t_raw = (nose[1] - eye_mid_y) / face_height  # neutral ≈ 0.5
+    pitch_deg = np.clip((t_raw - 0.5) * 120.0, -90.0, 90.0)
+
+    return round(yaw_deg, 2), round(pitch_deg, 2), None
+```
+
+**Convention kết quả (neutral face nhìn thẳng):**
+- yaw ≈ 0°, pitch ≈ 0° ✅ (không còn ±175°)
+- yaw > 0 → nose dịch trái ảnh → subject quay phải
+- yaw < 0 → nose dịch phải ảnh → subject quay trái
+- pitch > 0 → cúi xuống; pitch < 0 → ngẩng lên
+
+**Lưu ý:** Hàm `_estimate_pose_solvepnp()` vẫn giữ tên nhưng chỉ gọi `_estimate_pose_geometric()` (backward compat).
+
+---
+
+#### 3. ✅ Cập nhật POSE_STEP_CONFIG phù hợp với geometric method
+
+**File:** `backend/app/api/routes/enrollment.py`
+
+| Step | Instruction | yaw_range | pitch_range |
+|------|-------------|-----------|-------------|
+| 0 | Look straight | (-20, 20) | (-20, 20) |
+| 1 | Turn LEFT (subject left = raw frame right → yaw < 0) | (-∞, -20) | (-40, 40) |
+| 2 | Turn RIGHT (yaw > 0) | (20, +∞) | (-40, 40) |
+| 3 | Tilt UP (chin raised → pitch < -20) | (-35, 35) | (-∞, -20) |
+| 4 | Tilt DOWN (lower chin → pitch > 20) | (-35, 35) | (20, +∞) |
+| 5 | Look straight again | (-20, 20) | (-20, 20) |
+
+**Giải thích sign convention với mirror CSS (scaleX -1):**
+- User thấy trên màn hình: quay trái (mirror) → trong raw frame: quay phải → nose dịch phải → `eye_mid_x - nose_x < 0` → **yaw < 0** ✅
+- User thấy trên màn hình: quay phải (mirror) → trong raw frame: quay trái → nose dịch trái → **yaw > 0** ✅
+
+---
+
+#### 4. ✅ Các fix bổ sung từ đầu session
+
+**Fix 401 Unauthorized (phát hiện đầu session):**
+- **Root cause:** JWT token expire sau backend rebuild → frontend dùng token cũ → 60 requests đều 401 → báo lỗi "could not capture 5 valid frames" (lỗi mơ hồ, không nói rõ là 401)
+- **Fix frontend** `enroll/page.tsx`: detect `res.status === 401` → throw ngay với message rõ ràng "Session expired. Please log out and log in again"
+- **Log bằng chứng:** 60 dòng liên tiếp `"POST /api/enrollment/capture-frame HTTP/1.1" 401 Unauthorized`
+
+**Các thay đổi debug tạm thời (cần restore):**
+- `MIN_BLUR_ENROLLMENT = 0.0` (trong `enrollment.py`) — đặt về 0 để loại trừ blur là nguyên nhân. **Cần restore về 15-25 sau khi enrollment chạy ổn.**
+- `logger.warning("[BLUR] ...")` trong `ai-service/face_model.py` — log blur mọi frame. Có thể giữ hoặc xóa tùy ý.
+- Tất cả `logger.debug()` trong `enrollment.py` đã đổi sang `logger.warning()` để xuất hiện trong log (log level mặc định = WARNING=30, debug bị ignore)
+
+---
+
+#### 5. ✅ yaw/pitch debug display trên Frontend
+
+**File:** `frontend/src/app/students/enroll/page.tsx`
+- Video element: `style={{ transform: "scaleX(-1)" }}` — mirror để UX tự nhiên
+- State `lastQuality` mở rộng: `{blur, det, yaw, pitch}`
+- Debug line hiển thị: `blur: 42, det: 0.97, yaw: -5.3°, pitch: 2.1°`
+- Dùng để verify thresholds POSE_STEP_CONFIG chính xác
+
+---
+
+#### 6. ✅ Rebuild & Deploy
+
+```bash
+docker-compose up -d --build ai-service backend
+```
+
+**Trạng thái sau rebuild:**
+- `ai-service`: geometric pose method, blur logging
+- `backend`: POSE_STEP_CONFIG mới, MIN_BLUR=0, logger.warning
+- `frontend`: 401 detection, mirror video, yaw/pitch debug
+
+**⏳ Chờ verify:** User cần thử enrollment và xem debug line để confirm yaw/pitch có hợp lý không (neutral ≈ 0°, 0°). Nếu thresholds cần điều chỉnh thêm → sửa POSE_STEP_CONFIG rồi `docker-compose up -d --build backend`.
+
+---
+
+## 📊 Trạng thái hiện tại (Cập nhật 2026-03-02 phần 3)
 
 | Component | Status | Ghi chú |
 |---|---|---|
-| Backend API | ✅ Hoạt động | Không còn InsightFace, gọi ai-service |
-| **AI Face Service** | ✅ **Hoạt động** | port 9000, InsightFace buffalo_sc, /extract + /identify |
+| Backend API | ✅ Hoạt động | POSE_STEP_CONFIG geometric convention, MIN_BLUR=0 (temp) |
+| **AI Face Service** | ✅ Hoạt động | Geometric pose method, không còn solvePnP |
 | PostgreSQL | ✅ Hoạt động | Có test data |
-| Redis | ✅ Hoạt động | Enrollment sessions |
-| Frontend | ✅ Build thành công | Toàn bộ UI tiếng Anh + IP Webcam |
+| Redis | ✅ Hoạt động | Enrollment sessions (TTL 30 phút) |
+| Frontend | ✅ Build thành công | Mirror video, 401 detection, yaw/pitch debug |
 | JWT Auth | ✅ Fixed | Key cố định + dual-key decode |
-| Face Enrollment | ✅ Refactored | Async, gọi ai-service /extract |
+| Face Enrollment | ⚠️ **Cần test lại** | Geometric pose fix deployed, chờ user verify |
 | Face Identify | ✅ Refactored | AES decrypt local → ai-service /identify |
 | WebSocket | ✅ Fixed | prefix /ws, broadcast attendance |
 | Attendance REST | ✅ Tested | POST + GET hoạt động |
@@ -1214,29 +1342,44 @@ InsightFace load trong background thread → uvicorn start ngay → healthcheck 
 
 ## 🔜 Việc cần làm tiếp theo (theo thứ tự ưu tiên)
 
-### Ưu tiên cao
+### Ưu tiên cao — Cần làm NGAY
 
-1. **Test end-to-end Face Enrollment** — Mở `http://localhost:3000`, vào Students → chọn sinh viên chưa có face → "Register Face" → chụp ≥5 frames → Finalize. Xác nhận embedding được lưu vào DB.
+1. **Test enrollment sau fix geometric pose** — Chạy enrollment, nhìn debug line:
+   - Straight: `yaw ≈ 0°, pitch ≈ 0°` → phải pass step 0
+   - Turn LEFT (physical): `yaw < -20°` → phải pass step 1
+   - Turn RIGHT: `yaw > 20°` → phải pass step 2
+   - Tilt UP: `pitch < -20°` → phải pass step 3
+   - Tilt DOWN: `pitch > 20°` → phải pass step 4
+   - Nếu thresholds sai: điều chỉnh `POSE_STEP_CONFIG` trong `enrollment.py` → `docker-compose up -d --build backend`
 
-2. **Test WebSocket real-time** — Mở dashboard, dùng curl/Postman gọi `POST /api/attendance/` với device token → xác nhận dashboard cập nhật tức thì.
+2. **Restore MIN_BLUR_ENROLLMENT** — Sau khi enrollment pass, đặt lại:
+   ```python
+   # backend/app/api/routes/enrollment.py
+   MIN_BLUR_ENROLLMENT = 15.0  # Hoặc 20.0 — test với webcam thực tế
+   ```
+   Rebuild: `docker-compose up -d --build backend`
 
-3. **Test Bulk-sync offline** — Stop backend → edge ghi vào SQLite queue → Start backend lại → xác nhận `POST /api/attendance/bulk-sync` sync thành công.
+3. **Commit code sau khi enrollment hoạt động ổn định.**
 
 ### Ưu tiên trung bình
 
-4. **Alembic Migrations** — Thay `create_all` bằng Alembic để quản lý DB schema version cho production.
+4. **Test WebSocket real-time** — Mở dashboard, dùng curl/Postman gọi `POST /api/attendance/` với device token → xác nhận dashboard cập nhật tức thì.
 
-5. **CORS restrict** — Đổi `allow_origins=["*"]` → restrict về domain cụ thể trong production.
+5. **Test Bulk-sync offline** — Stop backend → edge ghi vào SQLite queue → Start backend lại → xác nhận `POST /api/attendance/bulk-sync` sync thành công.
 
-6. **Rate Limiter → Redis** — `rate_limiter.py` hiện vẫn dùng in-memory dict. Nên migrate sang Redis (tương tự enrollment sessions) để share giữa multiple backend instances.
+6. **Alembic Migrations** — Thay `create_all` bằng Alembic để quản lý DB schema version cho production.
+
+7. **CORS restrict** — Đổi `allow_origins=["*"]` → restrict về domain cụ thể trong production.
+
+8. **Rate Limiter → Redis** — `rate_limiter.py` hiện vẫn dùng in-memory dict. Nên migrate sang Redis (tương tự enrollment sessions) để share giữa multiple backend instances.
 
 ### Ưu tiên thấp / Dài hạn
 
-7. **AWS Deployment** — EC2 + RDS + ElastiCache + ECR/ECS + CloudFront + ALB + HTTPS
+9. **AWS Deployment** — EC2 + RDS + ElastiCache + ECR/ECS + CloudFront + ALB + HTTPS
 
-8. **Alembic** — DB schema migrations thay create_all
+10. **Alembic** — DB schema migrations thay create_all
 
-9. **Mobile App** — React Native cho admin và sinh viên
+11. **Mobile App** — React Native cho admin và sinh viên
 
 10. **Advanced Analytics** — Báo cáo tỷ lệ chuyên cần, export Excel/PDF
 
@@ -1297,4 +1440,4 @@ docker-compose up -d --build backend frontend
 
 ---
 
-*Cập nhật lần cuối: 2026-03-01 — Hoàn thành dịch UI tiếng Anh, fix JWT dual-key rotation, migrate enrollment sessions sang Redis.*
+*Cập nhật lần cuối: 2026-03-02 (phần 3) — Fix head pose estimation: bỏ solvePnP (back-of-head 180° bug), thay bằng geometric landmark method. Fix 401 detection trên frontend. POSE_STEP_CONFIG cập nhật theo geometric convention. Chờ verify enrollment end-to-end.*

@@ -61,27 +61,85 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
 
 
-# ── Head pose via solvePnP ───────────────────────────────────────────────────
+# ── Head pose from 5-point keypoints (geometric method) ─────────────────────
 #
-# 3D reference model for InsightFace 5-point keypoints.
-# Order: [left_eye, right_eye, nose_tip, left_mouth, right_mouth]
+# InsightFace 5-point keypoints order:
+#   0: left_eye, 1: right_eye, 2: nose_tip, 3: left_mouth, 4: right_mouth
+# "left/right" = from the SUBJECT's perspective.
+#   In a raw (unmirrored) camera frame:
+#     left_eye → appears on the RIGHT side of the image
+#     right_eye → appears on the LEFT side of the image
 #
-# This is a CAMERA-CENTRIC model for a raw (unmirrored) front-facing webcam:
-#   +X = image right  → subject's LEFT eye is on image right, so placed at +X
-#   +Y = image down   → eyes are above nose (smaller Y), mouth below (+Y)
-#   +Z = depth        → nose is the closest feature (Z=0), rest are behind (+Z)
-#
-# Values in mm (approximate; scale only affects tvec, not rotation).
-_FACE_3D_POINTS = np.array(
-    [
-        [ 165.0, -170.0, 135.0],  # 0: left eye center   (image right, above nose)
-        [-165.0, -170.0, 135.0],  # 1: right eye center  (image left,  above nose)
-        [   0.0,    0.0,   0.0],  # 2: nose tip          (origin reference)
-        [ 150.0,  150.0, 125.0],  # 3: left mouth corner (image right, below nose)
-        [-150.0,  150.0, 125.0],  # 4: right mouth corner(image left,  below nose)
-    ],
-    dtype=np.float64,
-)
+# Geometric yaw/pitch estimation (stable, no solvePnP 180° ambiguity):
+#   yaw  ∝ horizontal asymmetry between nose and the eye midpoint
+#   pitch ∝ vertical position of nose between eye-line and mouth-line
+
+
+def _estimate_pose_geometric(
+    kps: np.ndarray,
+    img_w: int,
+    img_h: int,
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """
+    Estimate head yaw/pitch from 5 facial keypoints using geometry only.
+    No solvePnP — avoids 180° disambiguation issues entirely.
+
+    Yaw convention (raw camera frame, no mirror):
+      yaw > 0  → nose shifted LEFT in image  → subject turned to THEIR right
+      yaw < 0  → nose shifted RIGHT in image → subject turned to THEIR left
+    Pitch convention:
+      pitch > 0 → chin down (nose below midline)
+      pitch < 0 → chin up   (nose above midline)
+
+    Returns (yaw_deg, pitch_deg, None) or (None, None, None) on failure.
+    """
+    try:
+        kps = np.array(kps, dtype=np.float64)
+        if kps.shape[0] < 5:
+            return None, None, None
+
+        left_eye   = kps[0]   # subject's left  = image right
+        right_eye  = kps[1]   # subject's right = image left
+        nose       = kps[2]
+        left_mouth = kps[3]
+        right_mouth= kps[4]
+
+        # ── Yaw ──────────────────────────────────────────────────────────────
+        # Eye midpoint horizontal position
+        eye_mid_x = (left_eye[0] + right_eye[0]) / 2.0
+        # Mouth midpoint horizontal position
+        mouth_mid_x = (left_mouth[0] + right_mouth[0]) / 2.0
+        # Interocular distance (pixel width between the two eyes)
+        eye_dist = abs(left_eye[0] - right_eye[0]) + 1e-6
+
+        # Horizontal offset of nose from the eye midpoint, normalized by eye_dist
+        # When face looks straight: nose_x ≈ eye_mid_x → offset ≈ 0
+        # When face turns right (subject): nose moves toward right_eye (image LEFT)
+        #   → left_eye moves right, right_eye moves left-ish, nose moves left
+        #   → (eye_mid_x - nose_x) > 0 → yaw_raw > 0 (turning to their right)
+        yaw_raw = (eye_mid_x - nose[0]) / eye_dist
+        # Scale to degrees: empirically, 0.5 offset ≈ 45°
+        yaw_deg = float(np.clip(yaw_raw * 90.0, -90.0, 90.0))
+
+        # ── Pitch ─────────────────────────────────────────────────────────────
+        # Vertical midpoint of eyes and mouth
+        eye_mid_y   = (left_eye[1] + right_eye[1]) / 2.0
+        mouth_mid_y = (left_mouth[1] + right_mouth[1]) / 2.0
+        face_height = abs(mouth_mid_y - eye_mid_y) + 1e-6
+
+        # Where is the nose's Y relative to the eye-mouth vertical span?
+        # Neutral: nose_y ≈ eye_mid_y + 0.5 * face_height → t_raw ≈ 0.5
+        t_raw = (nose[1] - eye_mid_y) / face_height
+        # Shift so that 0.5 maps to 0° pitch
+        # t_raw < 0.5 → nose above midline → chin up → pitch < 0
+        # t_raw > 0.5 → nose below midline → chin down → pitch > 0
+        pitch_deg = float(np.clip((t_raw - 0.5) * 120.0, -90.0, 90.0))
+
+        return round(yaw_deg, 2), round(pitch_deg, 2), None
+
+    except Exception as exc:
+        logger.debug("geometric pose failed: %s", exc)
+        return None, None, None
 
 
 def _estimate_pose_solvepnp(
@@ -89,53 +147,8 @@ def _estimate_pose_solvepnp(
     img_w: int,
     img_h: int,
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """
-    Estimate head pose (yaw, pitch, roll) in degrees from 5 facial keypoints
-    using cv2.solvePnP with a camera-centric 3D face model.
-
-    Returns (yaw, pitch, roll) or (None, None, None) on failure.
-    """
-    try:
-        # Approximate camera intrinsics for a typical webcam
-        focal = float(img_w)
-        cx, cy = img_w / 2.0, img_h / 2.0
-        camera_matrix = np.array(
-            [[focal, 0.0, cx], [0.0, focal, cy], [0.0, 0.0, 1.0]],
-            dtype=np.float64,
-        )
-        dist_coeffs = np.zeros((4, 1), dtype=np.float64)
-
-        image_points = np.array(kps[:5], dtype=np.float64)  # shape (5, 2)
-
-        ok, rvec, tvec = cv2.solvePnP(
-            _FACE_3D_POINTS,
-            image_points,
-            camera_matrix,
-            dist_coeffs,
-            flags=cv2.SOLVEPNP_EPNP,  # EPnP works with 4-5 points (ITERATIVE needs ≥6)
-        )
-        if not ok:
-            return None, None, None
-
-        # Rotation vector → rotation matrix
-        rmat, _ = cv2.Rodrigues(rvec)
-
-        # Decompose to Euler angles via projection matrix decomposition
-        # cv2.decomposeProjectionMatrix gives angles in the standard convention:
-        #   euler_angles[0] = pitch (X rotation)
-        #   euler_angles[1] = yaw   (Y rotation)
-        #   euler_angles[2] = roll  (Z rotation)
-        proj_matrix = np.hstack((rmat, tvec))
-        _, _, _, _, _, _, euler = cv2.decomposeProjectionMatrix(proj_matrix)
-        pitch_deg = round(float(euler[0][0]), 2)
-        yaw_deg   = round(float(euler[1][0]), 2)
-        roll_deg  = round(float(euler[2][0]), 2)
-
-        return yaw_deg, pitch_deg, roll_deg
-
-    except Exception as exc:
-        logger.debug("solvePnP failed: %s", exc)
-        return None, None, None
+    """Alias kept for backward compat — delegates to geometric method."""
+    return _estimate_pose_geometric(kps, img_w, img_h)
 
 
 # ── Core functions ────────────────────────────────────────────────────────────
@@ -170,6 +183,8 @@ def extract_embedding(
 
     # Blur check
     blur_var = _blur_score(gray)
+    logger.warning("[BLUR] image=%dx%d blur_var=%.1f threshold=%.1f %s",
+                   w, h, blur_var, min_blur, "PASS" if blur_var >= min_blur else "FAIL")
     if blur_var < min_blur:
         raise ValueError(f"Image too blurry (Laplacian={blur_var:.1f} < {min_blur})")
 

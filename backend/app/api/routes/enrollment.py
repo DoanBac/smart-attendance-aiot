@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ── Blur threshold ─────────────────────────────────────────────────────────────
-# 60.0 is too strict for typical laptop webcams (score 20-50 in normal lighting).
-# 25.0 allows most real-world frames while still rejecting heavily blurred ones.
-MIN_BLUR_ENROLLMENT = 25.0
+# Set to 0.0 to disable blur check entirely for debugging.
+# Once enrollment works, raise back to 15.0-25.0.
+MIN_BLUR_ENROLLMENT = 0.0
 
 # Redis key pattern: enrollment:{student_id} -> JSON list of base64-encoded embeddings
 # TTL: 30 minutes - session auto-deleted if admin abandons enrollment
@@ -41,46 +41,50 @@ _INF = float("inf")
 # Raise the |min| threshold if students need to turn more; lower it if the
 # model's values are smaller than expected.
 POSE_STEP_CONFIG = [
+    # Geometric landmark method — yaw/pitch centered at 0° for frontal face.
+    #
+    # Yaw sign: nose shifts LEFT in image → yaw > 0 (subject turns their RIGHT)
+    #           nose shifts RIGHT in image → yaw < 0 (subject turns their LEFT)
+    # With mirror (CSS scaleX -1):
+    #   "Turn LEFT" instruction → physical left → in raw frame nose goes RIGHT → yaw < 0
+    #   "Turn RIGHT" instruction → physical right → in raw frame nose goes LEFT → yaw > 0
+    #
     # step 0 — Look straight
-    # Wide range to accommodate baseline solvePnP offset (~-10° pitch at neutral).
     {
         "instruction": "Please look straight at the camera",
         "yaw_range":   (-20.0,  20.0),
-        "pitch_range": (-20.0,  10.0),
+        "pitch_range": (-20.0,  20.0),
     },
-    # step 1 — Turn head LEFT
-    # Mirror display (CSS scaleX -1): user turns physical LEFT.
-    # Raw frame: physical LEFT → image RIGHT → solvePnP gives yaw < 0 (verified).
-    # Requires a clear turn, not just a slight tilt.
+    # step 1 — Turn head LEFT (physical left, mirror shows moving right)
+    # In raw frame: nose moves to image right → yaw < 0
     {
         "instruction": "Please turn your head to the LEFT",
         "yaw_range":   (-_INF, -20.0),
-        "pitch_range": (-35.0,  20.0),
+        "pitch_range": (-40.0,  40.0),
     },
-    # step 2 — Turn head RIGHT → yaw > 0 (verified: image LEFT → yaw > 0 sign)
+    # step 2 — Turn head RIGHT → in raw frame: nose moves left → yaw > 0
     {
         "instruction": "Please turn your head to the RIGHT",
         "yaw_range":   (20.0,  _INF),
-        "pitch_range": (-35.0,  20.0),
+        "pitch_range": (-40.0,  40.0),
     },
-    # step 3 — Tilt UP (chin raised).
-    # Baseline neutral pitch ≈ -10°. Requiring < -22° ensures actual tilt.
+    # step 3 — Tilt UP (chin raised)
     {
         "instruction": "Please tilt your head UP (raise your chin)",
-        "yaw_range":   (-30.0,  30.0),
-        "pitch_range": (-_INF, -22.0),
+        "yaw_range":   (-35.0,  35.0),
+        "pitch_range": (-_INF, -20.0),
     },
-    # step 4 — Tilt DOWN (chin down → pitch becomes positive / larger positive).
+    # step 4 — Tilt DOWN (lower chin)
     {
         "instruction": "Please tilt your head DOWN (lower your chin)",
-        "yaw_range":   (-30.0,  30.0),
-        "pitch_range": (5.0,   _INF),
+        "yaw_range":   (-35.0,  35.0),
+        "pitch_range": (20.0,  _INF),
     },
     # step 5 — Straight again (confirm)
     {
         "instruction": "Please look straight at the camera again",
         "yaw_range":   (-20.0,  20.0),
-        "pitch_range": (-20.0,  10.0),
+        "pitch_range": (-20.0,  20.0),
     },
 ]
 
@@ -160,7 +164,7 @@ async def capture_frame(
     except ValueError as e:
         # Face not detected, too blurry, or face too small
         reason = str(e)
-        logger.debug("[enrollment] step=%d rejected — %s", data.step_index, reason)
+        logger.warning("[enrollment] step=%d quality-rejected — %s", data.step_index, reason)
         return {"accepted": False, "reason": reason, "buffered": 0}
     except RuntimeError as e:
         # AI service temporarily unavailable — tell frontend to retry, not crash
@@ -175,18 +179,22 @@ async def capture_frame(
     # ── Head pose validation ───────────────────────────────────────────────────
     pose_ok, pose_reason = _check_pose(meta, data.step_index)
     if not pose_ok:
-        logger.debug(
-            "[enrollment] step=%d pose rejected — yaw=%.1f pitch=%.1f — %s",
-            data.step_index,
-            meta.get("yaw") or 0,
-            meta.get("pitch") or 0,
-            pose_reason,
+        yaw_val = meta.get("yaw")
+        pitch_val = meta.get("pitch")
+        logger.warning(
+            "[enrollment] step=%d pose-rejected — yaw=%s pitch=%s — %s",
+            data.step_index, yaw_val, pitch_val, pose_reason,
+        )
+        reason_with_pose = (
+            f"{pose_reason} (yaw={yaw_val:.0f}° pitch={pitch_val:.0f}°)"
+            if yaw_val is not None and pitch_val is not None
+            else pose_reason
         )
         return {
             "accepted": False,
-            "reason": pose_reason,
+            "reason": reason_with_pose,
             "buffered": 0,
-            "pose": {"yaw": meta.get("yaw"), "pitch": meta.get("pitch")},
+            "pose": {"yaw": yaw_val, "pitch": pitch_val},
         }
 
     # Serialize embedding to base64 string for JSON storage in Redis
@@ -201,8 +209,8 @@ async def capture_frame(
     session.append(emb_b64)
     await redis.set(key, json.dumps(session), ex=ENROLLMENT_TTL_SECONDS)
 
-    logger.debug(
-        "[enrollment] step=%d accepted — quality=%.3f blur=%.1f yaw=%s pitch=%s buffered=%d",
+    logger.warning(
+        "[enrollment] step=%d ACCEPTED — quality=%.3f blur=%.1f yaw=%s pitch=%s buffered=%d",
         data.step_index, quality, meta.get("blur_variance", 0),
         meta.get("yaw"), meta.get("pitch"), len(session),
     )
