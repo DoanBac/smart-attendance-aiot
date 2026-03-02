@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { getApiBase } from "@/lib/api";
 import { Monitor, Wifi, WifiOff, RefreshCw, Copy } from "lucide-react";
 
 interface Device {
@@ -20,7 +21,7 @@ export default function DevicesPage() {
   const [form, setForm] = useState({ device_name: "", location: "", class_id: "" });
   const [newToken, setNewToken] = useState("");
 
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const base = getApiBase();
   const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : "";
 
   const fetchDevices = () => {

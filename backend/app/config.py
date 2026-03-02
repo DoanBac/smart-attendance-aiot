@@ -1,6 +1,8 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
+from pydantic import field_validator
+from typing import Optional, List
 import secrets
+import json
 
 class Settings(BaseSettings):
     # App
@@ -46,7 +48,24 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 100
     
     # CORS
-    ALLOWED_ORIGINS: list = ["http://localhost:3000", "https://yourdomain.com"]
+    # In .env set as JSON: ALLOWED_ORIGINS='["http://localhost:3000","https://yourdomain.com"]'
+    # For dev, the default below allows the Next.js frontend on port 3000.
+    ALLOWED_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_origins(cls, v):
+        """Accept both a JSON string and a Python list."""
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                # Treat comma-separated string as fallback
+                return [o.strip() for o in v.split(",") if o.strip()]
+        return v
 
     class Config:
         env_file = ".env"

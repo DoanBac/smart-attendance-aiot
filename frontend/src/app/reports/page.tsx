@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
+import { getApiBase } from "@/lib/api";
 import { BarChart2, Download } from "lucide-react";
 
 interface AttendanceRecord {
@@ -15,7 +16,7 @@ export default function ReportsPage() {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const base = getApiBase();
   const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : "";
 
   useEffect(() => {

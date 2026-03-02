@@ -20,7 +20,7 @@ router = APIRouter()
 # ── Blur threshold ─────────────────────────────────────────────────────────────
 # Set to 0.0 to disable blur check entirely for debugging.
 # Once enrollment works, raise back to 15.0-25.0.
-MIN_BLUR_ENROLLMENT = 0.0
+MIN_BLUR_ENROLLMENT = 20.0   # Laplacian variance threshold — frames below this are blurry
 
 # Redis key pattern: enrollment:{student_id} -> JSON list of base64-encoded embeddings
 # TTL: 30 minutes - session auto-deleted if admin abandons enrollment

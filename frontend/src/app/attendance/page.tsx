@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
+import { getApiBase } from "@/lib/api";
 import { RefreshCw, Wifi } from "lucide-react";
 
 interface AttendanceRecord {
@@ -21,7 +22,7 @@ export default function AttendancePage() {
   const [wsStatus, setWsStatus] = useState<"connected" | "disconnected">("disconnected");
   const wsRef = useRef<WebSocket | null>(null);
 
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const base = getApiBase();
   const wsBase = base.replace("http", "ws");
   const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : "";
 

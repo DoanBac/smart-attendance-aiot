@@ -1,6 +1,7 @@
 "use client";
 import { Users, Monitor, ClipboardCheck, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
+import { getApiBase } from "@/lib/api";
 
 interface Stats {
   total_students: number;
@@ -41,7 +42,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
-    const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const base = getApiBase();
 
     // Fetch students count
     fetch(`${base}/api/students/`, {

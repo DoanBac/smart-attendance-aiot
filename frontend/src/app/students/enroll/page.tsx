@@ -1,7 +1,8 @@
 ﻿"use client";
 import { useEffect, useRef, useState, Suspense } from "react";
+import { getApiBase } from "@/lib/api";
 import { useSearchParams } from "next/navigation";
-import { Camera, CheckCircle, ArrowLeft, Wifi, Monitor } from "lucide-react";
+import { Camera, CheckCircle, ArrowLeft, Wifi, Monitor, Search, X } from "lucide-react";
 import Link from "next/link";
 
 const POSE_STEPS = [
@@ -13,19 +14,22 @@ const POSE_STEPS = [
   { label: "Look straight (confirm)", emoji: "✅" },
 ];
 
-// Minimum accepted frames required before moving to the next pose step.
-// System will keep retrying until this many frames are accepted or
-// MAX_ATTEMPTS_PER_STEP is reached.
 const MIN_ACCEPTED_PER_STEP = 5;
-// 60 attempts × 600 ms = 36 seconds per step before giving up.
-// This is generous enough for any real-world lighting/positioning.
 const MAX_ATTEMPTS_PER_STEP = 60;
 
 type CameraMode = "local" | "ip";
 
+interface Student {
+  id: number;
+  student_code: string;
+  full_name: string;
+  status: string;
+  has_face: boolean;
+}
+
 function EnrollContent() {
   const searchParams = useSearchParams();
-  const studentId = searchParams.get("student_id") || "";
+  const preselectedId = searchParams.get("student_id") || ""; // numeric DB id from URL
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -37,16 +41,18 @@ function EnrollContent() {
   const [capturing, setCapturing] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
-  const [inputId, setInputId] = useState(studentId);
+
+  // ── Student picker ───────────────────────────────────────────────────────
+  const [students, setStudents] = useState<Student[]>([]);
+  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showDropdown, setShowDropdown] = useState(false);
 
   // Per-step acceptance tracking
   const [currentStepAccepted, setCurrentStepAccepted] = useState(0);
   const [stepAccepted, setStepAccepted] = useState<number[]>(new Array(POSE_STEPS.length).fill(0));
-  // Last-frame rejection feedback
   const [rejectReason, setRejectReason] = useState<string | null>(null);
-  // Live quality debug info (blur, det_score, yaw, pitch of last accepted frame)
   const [lastQuality, setLastQuality] = useState<{blur?: number; det?: number; yaw?: number; pitch?: number} | null>(null);
-  // Current attempt counter for "still scanning" feedback
   const [currentAttempts, setCurrentAttempts] = useState(0);
 
   const [cameraMode, setCameraMode] = useState<CameraMode>("local");
@@ -54,9 +60,31 @@ function EnrollContent() {
   const [ipConnected, setIpConnected] = useState(false);
   const [ipConnecting, setIpConnecting] = useState(false);
 
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-  const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : "";
+  const base = getApiBase();
+  const getToken = () => (typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : "");
 
+  // ── Fetch all active students on mount ───────────────────────────────────
+  useEffect(() => {
+    fetch(`${base}/api/students/?include_inactive=false`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        const list: Student[] = Array.isArray(data) ? data : (data.items ?? []);
+        setStudents(list);
+        // Auto-select if student_id was passed in URL
+        if (preselectedId) {
+          const found = list.find((s) => s.id === parseInt(preselectedId));
+          if (found) {
+            setSelectedStudent(found);
+            setSearchQuery(`${found.student_code} — ${found.full_name}`);
+          }
+        }
+      })
+      .catch(() => {});
+  }, [base, preselectedId]);
+
+  // ── Camera setup ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (cameraMode === "local") {
       startLocalCamera();
@@ -65,9 +93,7 @@ function EnrollContent() {
       streamRef.current = null;
       setIpConnected(false);
     }
-    return () => {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-    };
+    return () => { streamRef.current?.getTracks().forEach((t) => t.stop()); };
   }, [cameraMode]);
 
   const startLocalCamera = async () => {
@@ -76,56 +102,42 @@ function EnrollContent() {
         video: { width: 640, height: 480, facingMode: "user" },
       });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
+      if (videoRef.current) videoRef.current.srcObject = stream;
       setError("");
     } catch {
       setError("Cannot access local camera. Please check browser permissions.");
     }
   };
 
-  // Normalize base URL (strip trailing slash)
   const getBaseUrl = () => ipUrl.replace(/\/$/, "");
 
   const connectIpCamera = async () => {
     setIpConnected(false);
     setIpConnecting(true);
     setError("");
-
-    const base = getBaseUrl();
-    const shotUrl = `${base}/shot.jpg?t=${Date.now()}`;
-
+    const bUrl = getBaseUrl();
     try {
-      // Test connectivity bằng cách load 1 snapshot tĩnh (/shot.jpg)
-      // Dùng Image() để tránh CORS/mixed-content của fetch
       await new Promise<void>((resolve, reject) => {
         const testImg = new Image();
         testImg.onload = () => resolve();
         testImg.onerror = () => reject(new Error("Cannot load snapshot"));
-        testImg.src = shotUrl;
+        testImg.src = `${bUrl}/shot.jpg?t=${Date.now()}`;
         setTimeout(() => reject(new Error("Timeout")), 5000);
       });
-
-      // Nếu load được → hiện MJPEG stream trong <img> tag
-      if (imgRef.current) {
-        imgRef.current.src = `${base}/video?t=${Date.now()}`;
-      }
+      if (imgRef.current) imgRef.current.src = `${bUrl}/video?t=${Date.now()}`;
       setIpConnected(true);
       setError("");
     } catch {
       setIpConnected(false);
       setError(
-        `Cannot connect to IP Webcam at ${base}. ` +
-        `Make sure: 1) Same WiFi network  2) URL is correct (try opening ${base} in browser first)  ` +
-        `3) If using HTTPS, open ${base} in browser and accept the certificate first.`
+        `Cannot connect to IP Webcam at ${bUrl}. ` +
+        `Make sure: 1) Same WiFi network  2) URL is correct  3) Accept cert in browser first.`
       );
     } finally {
       setIpConnecting(false);
     }
   };
 
-  // Capture frame: local = drawImage từ <video>, IP = fetch /shot.jpg
   const captureFrame = async (): Promise<string | null> => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -140,31 +152,20 @@ function EnrollContent() {
       ctx.drawImage(video, 0, 0);
       return canvas.toDataURL("image/jpeg", 0.85);
     } else {
-      // IP mode: fetch snapshot từ /shot.jpg
       try {
-        const shotUrl = `${getBaseUrl()}/shot.jpg?t=${Date.now()}`;
-        const res = await fetch(shotUrl);
-        const blob = await res.blob();
-        const bitmap = await createImageBitmap(blob);
+        const res = await fetch(`${getBaseUrl()}/shot.jpg?t=${Date.now()}`);
+        const bitmap = await createImageBitmap(await res.blob());
         canvas.width = bitmap.width;
         canvas.height = bitmap.height;
         ctx.drawImage(bitmap, 0, 0);
         return canvas.toDataURL("image/jpeg", 0.85);
-      } catch {
-        return null;
-      }
+      } catch { return null; }
     }
   };
 
   const runEnrollment = async () => {
-    if (!inputId) {
-      setError("Please enter a Student ID.");
-      return;
-    }
-    if (cameraMode === "ip" && !ipConnected) {
-      setError("Please connect to the IP camera first.");
-      return;
-    }
+    if (!selectedStudent) { setError("Please select a student first."); return; }
+    if (cameraMode === "ip" && !ipConnected) { setError("Please connect to the IP camera first."); return; }
 
     setCapturing(true);
     setError("");
@@ -182,20 +183,14 @@ function EnrollContent() {
         setCurrentAttempts(0);
         setRejectReason(null);
 
-        // Give the student 2 seconds to move into the correct pose
         await new Promise((r) => setTimeout(r, 2000));
 
         let accepted = 0;
         let attempts = 0;
 
-        // Keep capturing until enough frames are accepted for this step.
-        // The loop will NOT advance until MIN_ACCEPTED_PER_STEP good frames
-        // are confirmed by the server — so wrong poses are naturally blocked.
         while (accepted < MIN_ACCEPTED_PER_STEP && attempts < MAX_ATTEMPTS_PER_STEP) {
           attempts++;
           setCurrentAttempts(attempts);
-          // 600 ms between captures — longer than 400 ms prevents motion-blur
-          // from the previous capture movement.
           await new Promise((r) => setTimeout(r, 600));
 
           const frame = await captureFrame();
@@ -204,32 +199,18 @@ function EnrollContent() {
           try {
             const res = await fetch(`${base}/api/enrollment/capture-frame`, {
               method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-              },
+              headers: { Authorization: `Bearer ${getToken()}`, "Content-Type": "application/json" },
               body: JSON.stringify({
-                student_id: parseInt(inputId),
+                student_id: selectedStudent.id,
                 frame_b64: frame.split(",")[1],
                 step_index: s,
               }),
             });
 
-            // 401 = token expired — stop immediately, don't waste 60 attempts
-            if (res.status === 401) {
-              throw new Error("Session expired. Please log out and log in again, then retry enrollment.");
-            }
+            if (res.status === 401) throw new Error("Session expired. Please log out and log in again, then retry enrollment.");
 
-            // Always try to parse JSON regardless of status code so we can
-            // surface a proper reason instead of silently counting as rejected.
             let data: Record<string, unknown> = {};
-            try {
-              data = await res.json();
-            } catch {
-              // Binary/non-JSON response — treat as transient error, keep retrying
-              setRejectReason("Server error — retrying…");
-              continue;
-            }
+            try { data = await res.json(); } catch { setRejectReason("Server error — retrying…"); continue; }
 
             if (data.accepted) {
               accepted++;
@@ -242,46 +223,31 @@ function EnrollContent() {
                 pitch: data.pitch as number | undefined,
               });
               setFrameCount((c) => c + 1);
-              setStepAccepted((prev) => {
-                const updated = [...prev];
-                updated[s] = accepted;
-                return updated;
-              });
+              setStepAccepted((prev) => { const u = [...prev]; u[s] = accepted; return u; });
             } else {
-              // Server rejected this frame — show reason so student can correct pose
-              const reason = (data.reason as string) || "Frame not accepted";
-              setRejectReason(reason);
+              setRejectReason((data.reason as string) || "Frame not accepted");
             }
-          } catch {
-            // Network hiccup — keep retrying silently
+          } catch (e: unknown) {
+            if (e instanceof Error && e.message.includes("Session expired")) throw e;
           }
         }
 
         if (accepted < MIN_ACCEPTED_PER_STEP) {
           throw new Error(
             `Pose "${POSE_STEPS[s].label}": could not capture ${MIN_ACCEPTED_PER_STEP} valid frames ` +
-            `after ${MAX_ATTEMPTS_PER_STEP} attempts. ` +
-            `Please ensure good lighting and that your face is fully visible.`
+            `after ${MAX_ATTEMPTS_PER_STEP} attempts. Please ensure good lighting and face fully visible.`
           );
         }
       }
 
-      // All steps satisfied — finalize
       setRejectReason(null);
       const res = await fetch(`${base}/api/enrollment/finalize`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ student_id: parseInt(inputId) }),
+        headers: { Authorization: `Bearer ${getToken()}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ student_id: selectedStudent.id }),
       });
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Enrollment failed");
-      }
-
+      if (!res.ok) { const err = await res.json(); throw new Error(err.detail || "Enrollment failed"); }
       setDone(true);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "An error occurred");
@@ -289,6 +255,15 @@ function EnrollContent() {
       setCapturing(false);
     }
   };
+
+  // ── Filtered student list for dropdown ───────────────────────────────────
+  const filteredStudents = students.filter((s) => {
+    const q = searchQuery.toLowerCase();
+    return (
+      s.student_code.toLowerCase().includes(q) ||
+      s.full_name.toLowerCase().includes(q)
+    );
+  });
 
   const progress = (step / POSE_STEPS.length) * 100;
 
@@ -299,7 +274,7 @@ function EnrollContent() {
           <CheckCircle className="w-20 h-20 text-green-500 mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-gray-800 mb-2">Enrollment Successful!</h2>
           <p className="text-gray-500 mb-6">
-            Face for student #{inputId} has been registered with {frameCount} frames.
+            Face for <span className="font-semibold text-gray-700">{selectedStudent?.student_code} — {selectedStudent?.full_name}</span> registered with {frameCount} frames.
           </p>
           <Link href="/students" className="bg-blue-600 text-white px-6 py-2.5 rounded-lg hover:bg-blue-700 transition-colors inline-block">
             Back to student list
@@ -316,30 +291,16 @@ function EnrollContent() {
       </Link>
 
       <h1 className="text-2xl font-bold text-gray-800 mb-2">Face Enrollment</h1>
-      <p className="text-gray-500 mb-6 text-sm">3D-like Face Scan  6 angles</p>
+      <p className="text-gray-500 mb-6 text-sm">3D-like Face Scan — 6 angles</p>
 
-      {/* Camera source selector */}
+      {/* Camera mode selector */}
       <div className="flex gap-2 mb-6">
-        <button
-          onClick={() => setCameraMode("local")}
-          disabled={capturing}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-            cameraMode === "local"
-              ? "bg-blue-600 text-white border-blue-600"
-              : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
-          } disabled:opacity-50`}
-        >
+        <button onClick={() => setCameraMode("local")} disabled={capturing}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${cameraMode === "local" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"} disabled:opacity-50`}>
           <Monitor className="w-4 h-4" /> Local Webcam
         </button>
-        <button
-          onClick={() => setCameraMode("ip")}
-          disabled={capturing}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-            cameraMode === "ip"
-              ? "bg-blue-600 text-white border-blue-600"
-              : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
-          } disabled:opacity-50`}
-        >
+        <button onClick={() => setCameraMode("ip")} disabled={capturing}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${cameraMode === "ip" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"} disabled:opacity-50`}>
           <Wifi className="w-4 h-4" /> IP Webcam
         </button>
       </div>
@@ -349,23 +310,15 @@ function EnrollContent() {
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
           <p className="text-sm font-medium text-blue-800 mb-1">IP Webcam URL</p>
           <p className="text-xs text-blue-600 mb-3">
-            Open <strong>IP Webcam</strong> app on your phone  tap <strong>Start server</strong>  enter the address shown (e.g.{" "}
+            Open <strong>IP Webcam</strong> app on your phone → tap <strong>Start server</strong> → enter the address shown (e.g.{" "}
             <code className="bg-blue-100 px-1 rounded">http://192.168.x.x:8080</code>)
           </p>
           <div className="flex gap-2">
-            <input
-              type="text"
-              value={ipUrl}
-              onChange={(e) => setIpUrl(e.target.value)}
-              disabled={capturing}
+            <input type="text" value={ipUrl} onChange={(e) => setIpUrl(e.target.value)} disabled={capturing}
               placeholder="http://192.168.1.100:8080"
-              className="flex-1 px-3 py-2 border border-blue-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white disabled:opacity-60"
-            />
-            <button
-              onClick={connectIpCamera}
-              disabled={capturing || ipConnecting}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-            >
+              className="flex-1 px-3 py-2 border border-blue-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white disabled:opacity-60" />
+            <button onClick={connectIpCamera} disabled={capturing || ipConnecting}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
               {ipConnecting ? "Connecting..." : "Connect"}
             </button>
           </div>
@@ -380,37 +333,19 @@ function EnrollContent() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* Camera preview */}
         <div className="bg-black rounded-2xl overflow-hidden aspect-video relative">
-          {/* Local cam: video element | IP cam: img element (MJPEG renders correctly in <img>) */}
           {cameraMode === "ip" ? (
-            <img
-              ref={imgRef}
-              alt="IP Camera stream"
-              className="w-full h-full object-cover"
-            />
+            <img ref={imgRef} alt="IP Camera stream" className="w-full h-full object-cover" />
           ) : (
-            <video
-              ref={videoRef}
-              autoPlay
-              muted
-              playsInline
-              className="w-full h-full object-cover"
-              style={{ transform: "scaleX(-1)" }}
-            />
+            <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" style={{ transform: "scaleX(-1)" }} />
           )}
           <canvas ref={canvasRef} className="hidden" />
 
-          {/* Overlay guide circle — turns red when last frame was rejected */}
           {capturing && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div
-                className={`border-4 rounded-full w-48 h-48 opacity-60 animate-pulse ${
-                  rejectReason ? "border-red-400" : "border-blue-400"
-                }`}
-              />
+              <div className={`border-4 rounded-full w-48 h-48 opacity-60 animate-pulse ${rejectReason ? "border-red-400" : "border-blue-400"}`} />
             </div>
           )}
 
-          {/* Rejection banner — tells student exactly what's wrong */}
           {capturing && rejectReason && (
             <div className="absolute top-4 left-0 right-0 flex justify-center pointer-events-none">
               <span className="bg-red-600/90 text-white px-4 py-2 rounded-full text-sm font-medium max-w-xs text-center">
@@ -419,7 +354,6 @@ function EnrollContent() {
             </div>
           )}
 
-          {/* Scanning indicator — shown when no rejection but also no acceptance yet */}
           {capturing && !rejectReason && currentStepAccepted === 0 && currentAttempts > 0 && (
             <div className="absolute top-4 left-0 right-0 flex justify-center pointer-events-none">
               <span className="bg-yellow-500/90 text-white px-4 py-2 rounded-full text-sm font-medium">
@@ -428,7 +362,6 @@ function EnrollContent() {
             </div>
           )}
 
-          {/* Step label + per-step progress on video */}
           {capturing && (
             <div className="absolute bottom-4 left-0 right-0 text-center space-y-1">
               <div>
@@ -444,7 +377,6 @@ function EnrollContent() {
             </div>
           )}
 
-          {/* IP mode badge */}
           {cameraMode === "ip" && (
             <div className="absolute top-3 left-3">
               <span className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${ipConnected ? "bg-green-500/80 text-white" : "bg-yellow-500/80 text-white"}`}>
@@ -457,57 +389,102 @@ function EnrollContent() {
 
         {/* Controls */}
         <div className="space-y-6">
+
+          {/* ── Student picker ─────────────────────────────────────────────── */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Student ID</label>
-            <input
-              type="number"
-              value={inputId}
-              onChange={(e) => setInputId(e.target.value)}
-              disabled={capturing}
-              className="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
-              placeholder="Enter student ID from the system..."
-            />
+            <label className="block text-sm font-medium text-gray-700 mb-2">Student</label>
+
+            {selectedStudent ? (
+              /* Selected state — show chip with clear button */
+              <div className="flex items-center gap-3 px-4 py-3 border border-blue-300 bg-blue-50 rounded-lg">
+                <div className="flex-1 min-w-0">
+                  <p className="font-mono font-semibold text-blue-700 text-sm">{selectedStudent.student_code}</p>
+                  <p className="text-gray-700 text-sm truncate">{selectedStudent.full_name}</p>
+                  {selectedStudent.has_face && (
+                    <p className="text-xs text-orange-500 mt-0.5">⚠️ Already has face data — will be overwritten</p>
+                  )}
+                </div>
+                {!capturing && (
+                  <button
+                    onClick={() => { setSelectedStudent(null); setSearchQuery(""); }}
+                    className="flex-shrink-0 text-gray-400 hover:text-gray-600 p-1"
+                    title="Change student"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ) : (
+              /* Search / select state */
+              <div className="relative">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => { setSearchQuery(e.target.value); setShowDropdown(true); }}
+                    onFocus={() => setShowDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
+                    disabled={capturing}
+                    placeholder="Search by name or student code (FSB001)…"
+                    className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+                  />
+                </div>
+
+                {showDropdown && filteredStudents.length > 0 && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-56 overflow-y-auto">
+                    {filteredStudents.map((s) => (
+                      <button
+                        key={s.id}
+                        onMouseDown={() => {
+                          setSelectedStudent(s);
+                          setSearchQuery(`${s.student_code} — ${s.full_name}`);
+                          setShowDropdown(false);
+                        }}
+                        className="w-full text-left px-4 py-2.5 hover:bg-blue-50 border-b border-gray-50 last:border-0 transition-colors"
+                      >
+                        <span className="font-mono text-xs font-semibold text-blue-600 mr-2">{s.student_code}</span>
+                        <span className="text-sm text-gray-700">{s.full_name}</span>
+                        {s.has_face && (
+                          <span className="ml-2 text-xs text-orange-500">★ has face</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {showDropdown && searchQuery && filteredStudents.length === 0 && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg px-4 py-3 text-sm text-gray-400">
+                    No students found for "{searchQuery}"
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
+          {/* Progress steps */}
           <div>
             <div className="flex justify-between text-sm text-gray-500 mb-2">
               <span>Progress</span>
               <span>{step}/{POSE_STEPS.length} steps</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
-              <div
-                className="bg-blue-600 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${capturing ? progress : 0}%` }}
-              />
+              <div className="bg-blue-600 h-2 rounded-full transition-all duration-500" style={{ width: `${capturing ? progress : 0}%` }} />
             </div>
             <div className="space-y-2">
               {POSE_STEPS.map((ps, i) => (
-                <div
-                  key={i}
-                  className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                    capturing && i === step
-                      ? "bg-blue-50 border border-blue-200 text-blue-700"
-                      : capturing && i < step
-                      ? "text-green-600"
-                      : "text-gray-400"
-                  }`}
-                >
+                <div key={i} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  capturing && i === step ? "bg-blue-50 border border-blue-200 text-blue-700"
+                  : capturing && i < step ? "text-green-600" : "text-gray-400"}`}>
                   <span className="text-lg">{ps.emoji}</span>
                   <span className="flex-1">{ps.label}</span>
-
-                  {/* Completed step: show tick + count */}
                   {capturing && i < step && (
                     <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
-                      <CheckCircle className="w-4 h-4" />
-                      {stepAccepted[i]}/{MIN_ACCEPTED_PER_STEP}
+                      <CheckCircle className="w-4 h-4" />{stepAccepted[i]}/{MIN_ACCEPTED_PER_STEP}
                     </span>
                   )}
-
-                  {/* Active step: show live accepted/total */}
                   {capturing && i === step && (
-                    <span className={`text-xs font-bold ${
-                      rejectReason ? "text-red-500" : "text-blue-600"
-                    }`}>
+                    <span className={`text-xs font-bold ${rejectReason ? "text-red-500" : "text-blue-600"}`}>
                       {currentStepAccepted}/{MIN_ACCEPTED_PER_STEP}
                     </span>
                   )}
@@ -518,8 +495,7 @@ function EnrollContent() {
 
           {capturing && (
             <div className="text-center text-sm text-gray-500">
-              Collected{" "}
-              <span className="font-bold text-blue-600">{frameCount}</span> high-quality frames
+              Collected <span className="font-bold text-blue-600">{frameCount}</span> high-quality frames
               {lastQuality?.blur !== undefined && (
                 <span className="ml-2 text-xs text-gray-400">
                   (blur: {lastQuality.blur.toFixed(0)}
@@ -532,26 +508,18 @@ function EnrollContent() {
           )}
 
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-              {error}
-            </div>
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">{error}</div>
           )}
 
           <button
             onClick={runEnrollment}
-            disabled={capturing || (cameraMode === "ip" && !ipConnected)}
+            disabled={capturing || !selectedStudent || (cameraMode === "ip" && !ipConnected)}
             className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white py-3 rounded-xl font-medium hover:bg-blue-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {capturing ? (
-              <>
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-                Capturing face data...
-              </>
+              <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Capturing face data...</>
             ) : (
-              <>
-                <Camera className="w-5 h-5" />
-                Start Face Enrollment
-              </>
+              <><Camera className="w-5 h-5" /> Start Face Enrollment</>
             )}
           </button>
         </div>
@@ -567,3 +535,4 @@ export default function EnrollPage() {
     </Suspense>
   );
 }
+

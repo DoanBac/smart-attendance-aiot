@@ -19,4 +19,9 @@ RUN mkdir -p /app/models
 COPY . .
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+
+# Make the startup script executable
+RUN chmod +x /app/start.sh
+
+# start.sh runs: alembic upgrade head → uvicorn
+CMD ["/app/start.sh"]

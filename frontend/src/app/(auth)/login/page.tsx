@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { getApiBase } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
@@ -9,7 +10,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const base = getApiBase();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

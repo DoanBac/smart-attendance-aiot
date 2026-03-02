@@ -9,11 +9,15 @@ from app.models.student import Student
 from app.schemas.attendance import AttendanceCreate
 
 async def create_attendance(db: AsyncSession, data: AttendanceCreate) -> Attendance:
+    # Strip timezone info before writing — DB column is TIMESTAMP WITHOUT TIME ZONE
+    ts = data.timestamp
+    if ts and ts.tzinfo is not None:
+        ts = ts.replace(tzinfo=None)
     record = Attendance(
         student_id=data.student_id,
         class_id=data.class_id,
         device_id=data.device_id,
-        timestamp=data.timestamp,
+        timestamp=ts,
         confidence=data.confidence,
         liveness_score=data.liveness_score,
         method=data.method,
@@ -48,11 +52,15 @@ async def bulk_sync_attendance(
     saved = 0
     for data in records:
         # Prevent duplicate: check same student + class + timestamp within 5 min window
+        # Strip timezone before compare + insert (DB column is tz-naive)
+        ts = data.timestamp
+        if ts and ts.tzinfo is not None:
+            ts = ts.replace(tzinfo=None)
         existing = await db.execute(
             select(Attendance).where(
                 Attendance.student_id == data.student_id,
                 Attendance.class_id == data.class_id,
-                Attendance.timestamp == data.timestamp
+                Attendance.timestamp == ts
             )
         )
         if existing.scalar_one_or_none():
@@ -61,7 +69,7 @@ async def bulk_sync_attendance(
             student_id=data.student_id,
             class_id=data.class_id,
             device_id=device_id or data.device_id,
-            timestamp=data.timestamp,
+            timestamp=ts,
             confidence=data.confidence,
             liveness_score=data.liveness_score,
             method=data.method,

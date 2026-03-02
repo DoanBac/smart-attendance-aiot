@@ -3,7 +3,7 @@ from typing import Optional, List
 from datetime import datetime
 
 class StudentCreate(BaseModel):
-    student_code: str
+    student_code: Optional[str] = None   # If omitted, auto-generated as FSB001, FSB002 …
     full_name: str
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
@@ -14,7 +14,7 @@ class StudentUpdate(BaseModel):
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
     class_id: Optional[int] = None
-    status: Optional[str] = None
+    status: Optional[str] = None   # "active" | "inactive"
 
 class StudentResponse(BaseModel):
     id: int
