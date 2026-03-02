@@ -112,69 +112,140 @@
 
 ## 4. Cài đặt & Chạy
 
-### 4.1 Clone & cấu hình
+> **Yêu cầu duy nhất:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) — không cần cài Python, Node.js, hay bất kỳ thứ gì khác.
+
+---
+
+### 🍎 Hướng dẫn đầy đủ cho macOS (Apple Silicon & Intel)
+
+#### Bước 1 — Cài Docker Desktop
 
 ```bash
-git clone <repo-url>
+# Cách 1: Tải trực tiếp (khuyên dùng)
+# → https://www.docker.com/products/docker-desktop/
+# Chọn bản "Mac with Apple Chip" (M1/M2/M3) hoặc "Mac with Intel Chip"
+
+# Cách 2: Dùng Homebrew
+brew install --cask docker
+```
+
+Sau khi cài, mở **Docker Desktop** và đợi icon Docker trên menu bar chuyển sang màu trắng (running).
+
+#### Bước 2 — Clone repo
+
+```bash
+git clone https://github.com/DoanBac/smart-attendance-aiot.git
 cd smart-attendance-aiot
 ```
 
-Tạo file `backend/.env` (nếu chưa có):
-
-```env
-DATABASE_URL=postgresql+asyncpg://doanbac07:070301@postgres:5432/attendance_db
-REDIS_URL=redis://redis:6379/0
-JWT_SECRET_KEY=your-super-secret-jwt-key-change-in-production
-AES_KEY=0000000000000000000000000000000000000000000000000000000000000000
-MODEL_STORAGE_PATH=/app/models
-COSINE_SIMILARITY_THRESHOLD=0.65
-```
-
-> ⚠️ **QUAN TRỌNG**: Thay `AES_KEY` thành chuỗi hex 64 ký tự (256-bit) cho môi trường production. Key này phải giống nhau trên cả Backend và Edge Device.
-
-### 4.2 Khởi động toàn bộ hệ thống
+#### Bước 3 — Tạo file `.env`
 
 ```bash
-# Build và chạy tất cả services
-docker-compose up -d --build
-
-# Xem logs
-docker-compose logs -f backend
-docker-compose logs -f frontend
+cp backend/.env.example backend/.env
 ```
 
-### 4.3 Kiểm tra trạng thái
+> File `.env` đã có sẵn giá trị hợp lệ để chạy local. **Không cần sửa gì** cho môi trường dev.
+
+#### Bước 4 — Build và chạy toàn bộ hệ thống
+
+```bash
+docker-compose up -d --build
+```
+
+Lần đầu sẽ mất **5–10 phút** (download images, build, cài packages AI). Các lần sau chỉ ~30 giây.
+
+#### Bước 5 — Seed dữ liệu mặc định (lần đầu chạy)
+
+```bash
+# Reset password admin về admin123
+docker exec smart-attendance-aiot-backend-1 python reset_admin_password.py
+```
+
+#### Bước 6 — Kiểm tra
 
 ```bash
 docker-compose ps
 ```
+
+Tất cả services phải ở trạng thái `Up` hoặc `healthy`:
 
 | Service | Port | URL |
 |---|---|---|
 | Frontend (Next.js) | 3000 | http://localhost:3000 |
 | Backend (FastAPI) | 8000 | http://localhost:8000 |
 | API Docs (Swagger) | 8000 | http://localhost:8000/docs |
-| PostgreSQL | 5432 | postgresql://localhost:5432/attendance_db |
-| Redis | 6379 | redis://localhost:6379 |
+| PostgreSQL | 5432 | — (internal) |
+| Redis | 6379 | — (internal) |
 
-### 4.4 Rebuild sau khi sửa code
+#### Bước 7 — Đăng nhập
+
+Mở http://localhost:3000
+
+| Field | Giá trị |
+|---|---|
+| Email | `admin@school.edu.vn` |
+| Password | `admin123` |
+
+---
+
+### 🪟 Hướng dẫn cho Windows
+
+Tương tự macOS — cài [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/), sau đó làm từ Bước 2 trở đi trong **PowerShell** hoặc **Git Bash**.
+
+---
+
+### 🔄 Các lệnh thường dùng
 
 ```bash
-# Rebuild toàn bộ
-docker-compose down && docker-compose up -d --build
+# Xem logs real-time
+docker-compose logs -f backend
+docker-compose logs -f frontend
 
-# Rebuild chỉ một service
+# Dừng tất cả
+docker-compose down
+
+# Rebuild sau khi sửa code backend
 docker-compose up -d --build backend
+
+# Rebuild sau khi sửa code frontend
 docker-compose up -d --build frontend
-```
 
-### 4.5 Reset database
-
-```bash
-# Xóa data và recreate
+# Reset hoàn toàn (xóa cả database)
 docker-compose down -v
 docker-compose up -d --build
+
+# Vào psql xem database
+docker exec -it smart-attendance-aiot-postgres-1 psql -U doanbac07 -d attendance_db
+
+# Xem enrollment sessions trong Redis
+docker exec -it smart-attendance-aiot-redis-1 redis-cli KEYS "enrollment:*"
 ```
+
+---
+
+### ⚠️ Lưu ý Apple Silicon (M1/M2/M3)
+
+Project dùng `onnxruntime` và `insightface` — **đã tương thích** với ARM64 thông qua Docker `linux/amd64` emulation. Nếu gặp lỗi `exec format error`:
+
+```bash
+# Thêm platform vào docker-compose.yml (nếu cần)
+# services:
+#   backend:
+#     platform: linux/amd64   ← thêm dòng này
+
+docker-compose up -d --build
+```
+
+---
+
+### 🔑 Tài khoản & Token mặc định
+
+| Loại | Giá trị |
+|---|---|
+| Admin email | `admin@school.edu.vn` |
+| Admin password | `admin123` |
+| Device token (test) | `b7da9fc490c04c20bcd0d4c8165a1ae4` |
+| Device class | Class ID = 2 |
 
 ---
 
