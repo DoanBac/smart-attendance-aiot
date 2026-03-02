@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import base64
 import json
 import numpy as np
@@ -19,9 +19,98 @@ router = APIRouter()
 # TTL: 30 minutes - session auto-deleted if admin abandons enrollment
 ENROLLMENT_TTL_SECONDS = 1800
 
+_INF = float("inf")
+
+# ── Step pose configuration ────────────────────────────────────────────────────
+# Maps step_index → expected head pose ranges in degrees.
+#
+# InsightFace pose convention (standard Euler angles from solvePnP):
+#   yaw   > 0  → subject turned to THEIR RIGHT  (camera sees subject's left cheek)
+#   yaw   < 0  → subject turned to THEIR LEFT   (camera sees subject's right cheek)
+#   pitch > 0  → head tilted DOWN (chin toward chest)
+#   pitch < 0  → head tilted UP   (chin raised)
+#
+# "slightly" = 10–35° away from neutral.
+# Raise the |min| threshold if students need to turn more; lower it if the
+# model's values are smaller than expected.
+POSE_STEP_CONFIG = [
+    # step 0 — Look straight
+    {
+        "instruction": "Please look straight at the camera",
+        "yaw_range":   (-15.0,  15.0),
+        "pitch_range": (-15.0,  15.0),
+    },
+    # step 1 — Turn head LEFT (subject's left → yaw < 0)
+    {
+        "instruction": "Please turn your head to the LEFT",
+        "yaw_range":   (-_INF, -10.0),
+        "pitch_range": (-30.0,  30.0),
+    },
+    # step 2 — Turn head RIGHT (subject's right → yaw > 0)
+    {
+        "instruction": "Please turn your head to the RIGHT",
+        "yaw_range":   (10.0,  _INF),
+        "pitch_range": (-30.0,  30.0),
+    },
+    # step 3 — Tilt UP (chin raised → pitch < 0)
+    {
+        "instruction": "Please tilt your head UP (raise your chin)",
+        "yaw_range":   (-25.0,  25.0),
+        "pitch_range": (-_INF, -8.0),
+    },
+    # step 4 — Tilt DOWN (chin down → pitch > 0)
+    {
+        "instruction": "Please tilt your head DOWN (lower your chin)",
+        "yaw_range":   (-25.0,  25.0),
+        "pitch_range": (8.0,   _INF),
+    },
+    # step 5 — Straight again (confirm)
+    {
+        "instruction": "Please look straight at the camera again",
+        "yaw_range":   (-15.0,  15.0),
+        "pitch_range": (-15.0,  15.0),
+    },
+]
+
 
 def _redis_key(student_id: int) -> str:
     return f"enrollment:{student_id}"
+
+
+def _check_pose(meta: dict, step_index: int) -> Tuple[bool, str]:
+    """
+    Validate that the head pose in `meta` matches the expected direction for
+    the given enrollment step.
+
+    Returns (ok, reason):
+      ok=True  → pose is correct, frame can be accepted
+      ok=False → pose is wrong; `reason` is the human-readable instruction
+                 that will be displayed to the student.
+
+    If the AI service did not return pose data (yaw/pitch are None), pose
+    validation is skipped and the frame is accepted on quality alone.
+    """
+    if step_index < 0 or step_index >= len(POSE_STEP_CONFIG):
+        return True, ""
+
+    yaw   = meta.get("yaw")
+    pitch = meta.get("pitch")
+
+    # Degraded mode: model does not support pose estimation → skip check
+    if yaw is None or pitch is None:
+        return True, ""
+
+    cfg = POSE_STEP_CONFIG[step_index]
+    yaw_min,   yaw_max   = cfg["yaw_range"]
+    pitch_min, pitch_max = cfg["pitch_range"]
+
+    if not (yaw_min <= yaw <= yaw_max):
+        return False, cfg["instruction"]
+
+    if not (pitch_min <= pitch <= pitch_max):
+        return False, cfg["instruction"]
+
+    return True, ""
 
 
 class CaptureFrameRequest(BaseModel):
@@ -58,6 +147,19 @@ async def capture_frame(
         )
     except ValueError as e:
         return {"accepted": False, "reason": str(e), "buffered": 0}
+
+    # ── Head pose validation ───────────────────────────────────────────────────
+    # Ensure the student is actually performing the requested pose before
+    # accepting the frame. Wrong direction → rejected with a clear instruction.
+    pose_ok, pose_reason = _check_pose(meta, data.step_index)
+    if not pose_ok:
+        return {
+            "accepted": False,
+            "reason": pose_reason,
+            "buffered": 0,
+            # Debug info so frontend can optionally display live angles
+            "pose": {"yaw": meta.get("yaw"), "pitch": meta.get("pitch")},
+        }
 
     # Serialize embedding to base64 string for JSON storage in Redis
     emb_b64 = base64.b64encode(emb.astype(np.float32).tobytes()).decode()

@@ -121,12 +121,32 @@ def extract_embedding(
     blur_norm = min(1.0, blur_var / 500.0)  # 500 = ảnh rất sắc
     quality = round(0.6 * det_score + 0.4 * blur_norm, 4)
 
+    # ── Head pose estimation ──────────────────────────────────────────────────
+    # InsightFace computes pose from 5-point landmarks via solvePnP.
+    # face.pose = [pitch, yaw, roll] in degrees.
+    #   yaw  > 0 → head turned to subject's RIGHT  (camera sees left cheek)
+    #   yaw  < 0 → head turned to subject's LEFT   (camera sees right cheek)
+    #   pitch> 0 → head tilted DOWN (chin down)
+    #   pitch< 0 → head tilted UP   (chin up)
+    yaw: Optional[float] = None
+    pitch: Optional[float] = None
+    roll: Optional[float] = None
+    if hasattr(face, "pose") and face.pose is not None:
+        pose = face.pose  # shape (3,) or list
+        pitch = round(float(pose[0]), 2)
+        yaw   = round(float(pose[1]), 2)
+        roll  = round(float(pose[2]), 2)
+
     meta = {
         "bbox": [float(x) for x in face.bbox],
         "det_score": det_score,
         "blur_variance": round(blur_var, 2),
         "image_size": [w, h],
         "face_area_ratio": round(face_area / img_area, 4),
+        # Head pose angles in degrees (None if model does not support pose)
+        "yaw": yaw,
+        "pitch": pitch,
+        "roll": roll,
     }
 
     return emb, quality, meta
