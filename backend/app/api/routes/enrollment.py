@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
@@ -13,7 +14,13 @@ from app.core.redis_client import get_redis
 from app.schemas.student import EmbeddingUpload
 from app.services.face_service import store_embedding, identify_face, face_service
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ── Blur threshold ─────────────────────────────────────────────────────────────
+# 60.0 is too strict for typical laptop webcams (score 20-50 in normal lighting).
+# 25.0 allows most real-world frames while still rejecting heavily blurred ones.
+MIN_BLUR_ENROLLMENT = 25.0
 
 # Redis key pattern: enrollment:{student_id} -> JSON list of base64-encoded embeddings
 # TTL: 30 minutes - session auto-deleted if admin abandons enrollment
@@ -143,21 +150,42 @@ async def capture_frame(
         emb, quality, meta = await face_service.extract_embedding(
             img_bytes,
             angle="center",
-            min_blur=60.0,
+            min_blur=MIN_BLUR_ENROLLMENT,
         )
     except ValueError as e:
-        return {"accepted": False, "reason": str(e), "buffered": 0}
+        # Face not detected, too blurry, or face too small
+        reason = str(e)
+        logger.debug("[enrollment] step=%d rejected — %s", data.step_index, reason)
+        return {"accepted": False, "reason": reason, "buffered": 0}
+    except RuntimeError as e:
+        # AI service temporarily unavailable — tell frontend to retry, not crash
+        reason = "AI service unavailable — retrying…"
+        logger.warning("[enrollment] step=%d AI service error: %s", data.step_index, e)
+        return {"accepted": False, "reason": reason, "buffered": 0}
+    except Exception as e:
+        reason = "Internal error — retrying…"
+        logger.exception("[enrollment] step=%d unexpected error: %s", data.step_index, e)
+        return {"accepted": False, "reason": reason, "buffered": 0}
 
     # ── Head pose validation ───────────────────────────────────────────────────
-    # Ensure the student is actually performing the requested pose before
-    # accepting the frame. Wrong direction → rejected with a clear instruction.
+    # buffalo_sc does NOT include a pose estimation model — face.pose is always
+    # None. _check_pose() returns (True, "") when yaw/pitch are None (degraded
+    # mode) so this block is effectively a no-op with the current model.
+    # When the model is upgraded to buffalo_l (which includes 3D landmark
+    # detection), pose validation will automatically activate.
     pose_ok, pose_reason = _check_pose(meta, data.step_index)
     if not pose_ok:
+        logger.debug(
+            "[enrollment] step=%d pose rejected — yaw=%.1f pitch=%.1f — %s",
+            data.step_index,
+            meta.get("yaw", 0),
+            meta.get("pitch", 0),
+            pose_reason,
+        )
         return {
             "accepted": False,
             "reason": pose_reason,
             "buffered": 0,
-            # Debug info so frontend can optionally display live angles
             "pose": {"yaw": meta.get("yaw"), "pitch": meta.get("pitch")},
         }
 
@@ -173,10 +201,18 @@ async def capture_frame(
     session.append(emb_b64)
     await redis.set(key, json.dumps(session), ex=ENROLLMENT_TTL_SECONDS)
 
+    logger.debug(
+        "[enrollment] step=%d accepted — quality=%.3f blur=%.1f buffered=%d",
+        data.step_index, quality, meta.get("blur_variance", 0), len(session),
+    )
+
     return {
         "accepted": True,
         "quality": round(quality, 4),
         "buffered": len(session),
+        # Debug fields — frontend can display these to help diagnose issues
+        "blur_variance": meta.get("blur_variance"),
+        "det_score": meta.get("det_score"),
     }
 
 

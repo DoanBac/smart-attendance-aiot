@@ -17,7 +17,9 @@ const POSE_STEPS = [
 // System will keep retrying until this many frames are accepted or
 // MAX_ATTEMPTS_PER_STEP is reached.
 const MIN_ACCEPTED_PER_STEP = 5;
-const MAX_ATTEMPTS_PER_STEP = 30;
+// 60 attempts × 600 ms = 36 seconds per step before giving up.
+// This is generous enough for any real-world lighting/positioning.
+const MAX_ATTEMPTS_PER_STEP = 60;
 
 type CameraMode = "local" | "ip";
 
@@ -42,6 +44,10 @@ function EnrollContent() {
   const [stepAccepted, setStepAccepted] = useState<number[]>(new Array(POSE_STEPS.length).fill(0));
   // Last-frame rejection feedback
   const [rejectReason, setRejectReason] = useState<string | null>(null);
+  // Live quality debug info (blur variance of last accepted frame)
+  const [lastQuality, setLastQuality] = useState<{blur?: number; det?: number} | null>(null);
+  // Current attempt counter for "still scanning" feedback
+  const [currentAttempts, setCurrentAttempts] = useState(0);
 
   const [cameraMode, setCameraMode] = useState<CameraMode>("local");
   const [ipUrl, setIpUrl] = useState("http://192.168.123.234:8080");
@@ -165,12 +171,15 @@ function EnrollContent() {
     setFrameCount(0);
     setCurrentStepAccepted(0);
     setRejectReason(null);
+    setLastQuality(null);
+    setCurrentAttempts(0);
     setStepAccepted(new Array(POSE_STEPS.length).fill(0));
 
     try {
       for (let s = 0; s < POSE_STEPS.length; s++) {
         setStep(s);
         setCurrentStepAccepted(0);
+        setCurrentAttempts(0);
         setRejectReason(null);
 
         // Give the student 2 seconds to move into the correct pose
@@ -184,7 +193,10 @@ function EnrollContent() {
         // are confirmed by the server — so wrong poses are naturally blocked.
         while (accepted < MIN_ACCEPTED_PER_STEP && attempts < MAX_ATTEMPTS_PER_STEP) {
           attempts++;
-          await new Promise((r) => setTimeout(r, 400));
+          setCurrentAttempts(attempts);
+          // 600 ms between captures — longer than 400 ms prevents motion-blur
+          // from the previous capture movement.
+          await new Promise((r) => setTimeout(r, 600));
 
           const frame = await captureFrame();
           if (!frame) continue;
@@ -203,12 +215,25 @@ function EnrollContent() {
               }),
             });
 
-            const data = await res.json();
+            // Always try to parse JSON regardless of status code so we can
+            // surface a proper reason instead of silently counting as rejected.
+            let data: Record<string, unknown> = {};
+            try {
+              data = await res.json();
+            } catch {
+              // Binary/non-JSON response — treat as transient error, keep retrying
+              setRejectReason("Server error — retrying…");
+              continue;
+            }
 
             if (data.accepted) {
               accepted++;
               setCurrentStepAccepted(accepted);
               setRejectReason(null);
+              setLastQuality({
+                blur: data.blur_variance as number | undefined,
+                det: data.det_score as number | undefined,
+              });
               setFrameCount((c) => c + 1);
               setStepAccepted((prev) => {
                 const updated = [...prev];
@@ -217,10 +242,11 @@ function EnrollContent() {
               });
             } else {
               // Server rejected this frame — show reason so student can correct pose
-              setRejectReason(data.reason || "Frame not clear enough");
+              const reason = (data.reason as string) || "Frame not accepted";
+              setRejectReason(reason);
             }
           } catch {
-            // Network hiccup — keep retrying
+            // Network hiccup — keep retrying silently
           }
         }
 
@@ -373,8 +399,17 @@ function EnrollContent() {
           {/* Rejection banner — tells student exactly what's wrong */}
           {capturing && rejectReason && (
             <div className="absolute top-4 left-0 right-0 flex justify-center pointer-events-none">
-              <span className="bg-red-600/90 text-white px-4 py-2 rounded-full text-sm font-medium">
-                ⚠️ {rejectReason} — adjust and hold still
+              <span className="bg-red-600/90 text-white px-4 py-2 rounded-full text-sm font-medium max-w-xs text-center">
+                ⚠️ {rejectReason}
+              </span>
+            </div>
+          )}
+
+          {/* Scanning indicator — shown when no rejection but also no acceptance yet */}
+          {capturing && !rejectReason && currentStepAccepted === 0 && currentAttempts > 0 && (
+            <div className="absolute top-4 left-0 right-0 flex justify-center pointer-events-none">
+              <span className="bg-yellow-500/90 text-white px-4 py-2 rounded-full text-sm font-medium">
+                🔍 Scanning… ({currentAttempts}/{MAX_ATTEMPTS_PER_STEP})
               </span>
             </div>
           )}
@@ -469,7 +504,14 @@ function EnrollContent() {
 
           {capturing && (
             <div className="text-center text-sm text-gray-500">
-              Collected <span className="font-bold text-blue-600">{frameCount}</span> high-quality frames
+              Collected{" "}
+              <span className="font-bold text-blue-600">{frameCount}</span> high-quality frames
+              {lastQuality?.blur !== undefined && (
+                <span className="ml-2 text-xs text-gray-400">
+                  (blur: {lastQuality.blur.toFixed(0)}
+                  {lastQuality.det !== undefined && `, det: ${lastQuality.det.toFixed(2)}`})
+                </span>
+              )}
             </div>
           )}
 
