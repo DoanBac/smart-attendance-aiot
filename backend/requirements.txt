@@ -1,0 +1,23 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.13.3
+pydantic==2.9.2
+pydantic-settings==2.5.2
+pydantic[email]==2.9.2
+python-jose[cryptography]==3.3.0
+passlib==1.7.4
+bcrypt==4.0.1
+cryptography==43.0.3
+python-multipart==0.0.12
+httpx==0.27.2
+redis==5.1.1
+numpy==1.26.4
+email-validator==2.2.0
+# ── AI Models theo Paper ──────────────────────────
+insightface==0.7.3           # ArcFace embedding + RetinaFace detection
+onnxruntime==1.19.2          # ONNX Runtime - CPUExecutionProvider
+opencv-python-headless==4.10.0.84
+Pillow==10.4.0
+scipy==1.13.1                # PnP head pose estimation

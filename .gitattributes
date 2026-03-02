@@ -1,0 +1,32 @@
+# Normalize line endings: store as LF in repo, checkout as-is on each OS
+* text=auto eol=lf
+
+# Force LF for these file types even on Windows
+*.py    text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.jsx   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+*.sql   text eol=lf
+*.txt   text eol=lf
+*.ini   text eol=lf
+*.cfg   text eol=lf
+*.env.example text eol=lf
+
+# Binary — do not touch line endings
+*.onnx  binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.db    binary
