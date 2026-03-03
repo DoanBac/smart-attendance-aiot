@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 REDIS_CHANNEL_PREFIX = "ws:attendance:"
+GLOBAL_CLASS_ID = 0   # virtual id used for the "all classes" dashboard channel
 
 
 class ConnectionManager:
@@ -121,21 +122,40 @@ async def broadcast_attendance(class_id: int, record: dict):
     """
     Called by attendance_service after a new record is saved.
     Publishes to Redis so ALL workers (with WS clients) receive it.
+    Also publishes to the global channel (GLOBAL_CLASS_ID=0) for dashboard.
     """
     from app.core.redis_client import get_redis
+    payload = json.dumps({"event": "attendance", "data": record})
     try:
         redis = await get_redis()
         channel = f"{REDIS_CHANNEL_PREFIX}{class_id}"
-        payload = json.dumps({"event": "attendance", "data": record})
         await redis.publish(channel, payload)
-        logger.debug(f"Published attendance to Redis channel {channel}")
+        # Also broadcast to global dashboard channel
+        if class_id != GLOBAL_CLASS_ID:
+            await redis.publish(f"{REDIS_CHANNEL_PREFIX}{GLOBAL_CLASS_ID}", payload)
+        logger.debug(f"Published attendance to Redis channel {channel} + global")
     except Exception as e:
         # Fallback: broadcast locally if Redis publish fails
         logger.warning(f"Redis publish failed ({e}), falling back to local broadcast")
         await manager.broadcast_local(class_id, {"event": "attendance", "data": record})
+        await manager.broadcast_local(GLOBAL_CLASS_ID, {"event": "attendance", "data": record})
 
 
 # ── WebSocket endpoint ────────────────────────────────────────────────────────
+
+@router.websocket("/attendance/all")
+async def attendance_ws_all(websocket: WebSocket):
+    """Global dashboard channel — receives events from ALL classes."""
+    await manager.connect(websocket, GLOBAL_CLASS_ID)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, GLOBAL_CLASS_ID)
+        logger.info("WS disconnected from global dashboard channel")
+
 
 @router.websocket("/attendance/{class_id}")
 async def attendance_ws(websocket: WebSocket, class_id: int):

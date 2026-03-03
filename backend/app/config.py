@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     
     # Face Recognition
     MODEL_STORAGE_PATH: str = "/app/models"
-    COSINE_SIMILARITY_THRESHOLD: float = 0.65
+    COSINE_SIMILARITY_THRESHOLD: float = 0.50   # buffalo_l: more discriminative; 0.50 safe with angled pose challenge
     MAX_FACE_DISTANCE: float = 0.35
 
     # AI Face Inference Microservice

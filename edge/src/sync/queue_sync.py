@@ -113,25 +113,57 @@ def send_heartbeat():
         pass
 
 class SyncDaemon(threading.Thread):
-    """Background thread that runs every SYNC_INTERVAL_SEC."""
+    """Background thread: sync queue + pull embeddings with exponential backoff when offline."""
+
+    MIN_INTERVAL = 5       # seconds — fastest retry when online
+    MAX_INTERVAL = 300     # seconds — cap at 5 min when offline
+
     def __init__(self):
         super().__init__(daemon=True, name="SyncDaemon")
         self._stop_event = threading.Event()
+        self._online = False
+        self._backoff = self.MIN_INTERVAL
 
     def run(self):
         logger.info("SyncDaemon started.")
-        # Initial full sync on startup
+        # Pull embeddings immediately on startup
         sync_embeddings_from_cloud()
+
+        embed_counter = 0
+        EMBED_EVERY_N = 10  # re-pull embeddings every ~10 successful sync cycles
 
         while not self._stop_event.is_set():
             try:
-                sync_attendance_queue()
-                send_heartbeat()
+                online = _is_online()
+                if online != self._online:
+                    logger.info("Network %s", "ONLINE" if online else "OFFLINE")
+                self._online = online
+
+                if online:
+                    sync_attendance_queue()
+                    send_heartbeat()
+                    embed_counter += 1
+                    if embed_counter >= EMBED_EVERY_N:
+                        sync_embeddings_from_cloud()
+                        embed_counter = 0
+                    # Reset backoff on success
+                    self._backoff = self.MIN_INTERVAL
+                else:
+                    # Exponential backoff: 5s → 10s → 20s → ... → 300s
+                    self._backoff = min(self._backoff * 2, self.MAX_INTERVAL)
+                    logger.debug("Offline — next retry in %ds", self._backoff)
+
             except Exception as e:
-                logger.error(f"SyncDaemon error: {e}")
-            self._stop_event.wait(timeout=config.SYNC_INTERVAL_SEC)
+                logger.error("SyncDaemon error: %s", e)
+                self._backoff = min(self._backoff * 2, self.MAX_INTERVAL)
+
+            self._stop_event.wait(timeout=self._backoff)
 
         logger.info("SyncDaemon stopped.")
+
+    @property
+    def is_online(self) -> bool:
+        return self._online
 
     def stop(self):
         self._stop_event.set()

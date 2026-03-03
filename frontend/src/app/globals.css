@@ -12,3 +12,22 @@ body {
   color: rgb(var(--foreground-rgb));
   background: #f8fafc;
 }
+
+/* Kiosk: beam sweeps inside face oval */
+@keyframes scanBeam {
+  0%   { transform: translateY(-88px); }
+  50%  { transform: translateY(88px); }
+  100% { transform: translateY(-88px); }
+}
+
+/* Kiosk: progress bar slides across top */
+@keyframes progressBar {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+/* Kiosk fullscreen: prevent pull-to-refresh and overscroll */
+.kiosk-root {
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}

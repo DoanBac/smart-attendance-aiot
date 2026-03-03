@@ -860,26 +860,37 @@ Nếu gửi ít hơn 5 frames chất lượng tốt trước khi finalize, serve
 - [x] **AWS CDK Deployment files** — ✅ DONE (session 2026-03-02) — infra/ directory
 - [x] **Cloudflare Tunnel + nginx** — ✅ DONE (session 2026-03-02) — PC-as-cloud, zero cost
 - [x] **Frontend dynamic URL** — ✅ DONE (session 2026-03-02) — `getApiBase()` / `getWsBase()`
-- [ ] **Test edge bulk-sync WS broadcast** — bulk-sync không gọi `broadcast_attendance()` → cần fix
-- [ ] **Nginx route `/health`** → hiện 404 qua Cloudflare (nginx chưa route root `/health`)
-- [ ] **Face enrollment UI** — hoàn thiện flow webcam capture trên browser (endpoint ready, cần test end-to-end)
-- [ ] **Liveness UI** — hiển thị hướng dẫn (nháy mắt, quay đầu) cho người dùng
+- [x] **Raspberry Pi edge deployment** — ✅ DONE (session 2026-03-04) — Docker build, AES_KEY fix, embedding sync OK
+- [x] **Web Kiosk camera fix (Pi browser)** — ✅ DONE (session 2026-03-04) — relaxed constraints, `enumerateDevices()`, `setCamReady` after `play()`
+- [x] **ESP8266 Door Controller firmware** — ✅ DONE (session 2026-03-04) — `ESP8266WebServer`, state machine, CORS, exit button
+- [x] **Backend `POST /api/devices/exit` endpoint** — ✅ DONE (session 2026-03-04)
+- [x] **Kiosk token bảo mật** — ✅ DONE (session 2026-03-04) — token lưu `localStorage`, URL sạch `/kiosk/{classId}`
+- [x] **ESP8266 gọi từ browser (CÙNG mạng LAN)** — ✅ DONE (session 2026-03-04) — Docker backend không reach được ESP8266 → browser gọi trực tiếp
+- [ ] **Fix LED_RED GPIO0 boot issue** — đổi sang D6/GPIO12, cần flash lại ESP8266
+- [ ] **Magnet overheating** — thêm resistor 33Ω 5W hoặc MOSFET peak-and-hold
+- [ ] **Test end-to-end hoàn chỉnh** — face scan → ESP8266 relay click → door open
 
 ### 🏗️ Trung hạn (1-2 tháng)
 
 - [x] **AWS CDK Deployment** — ✅ DONE (session 2026-03-02) — EC2 + RDS + ElastiCache (xem `infra/`)
 - [x] **PC-as-Cloud (Cloudflare Tunnel)** — ✅ DONE (session 2026-03-02) — miễn phí, zero config
+- [x] **Edge Device thực tế (Raspberry Pi 4)** — ✅ DONE (session 2026-03-04) — Docker running, face sync, recognition loop
+- [x] **ESP8266 Door Lock Controller** — ✅ DONE (session 2026-03-04) — web server mode, multi-device linh hoạt
 
-- [ ] **Edge Firmware thực tế**
-  - Test trên Raspberry Pi 4
-  - Camera stream với CSI Camera Module
-  - Watchdog để auto-restart
+- [ ] **Edge Firmware hoàn thiện**
+  - Watchdog auto-restart khi crash
   - OTA firmware update qua Cloud
+  - Camera stream với CSI Camera Module
 
-- [ ] **ESP32 Integration** (optional)
-  - ESP32-CAM capture frame → gửi lên Pi qua UART/WiFi
-  - LED indicator (xanh: present, đỏ: not recognized)
-  - LCD hiển thị tên sinh viên sau khi nhận diện
+- [ ] **Cải thiện nhận diện trên Pi**
+  - Camera chất lượng cao hơn (Sony IMX519)
+  - Tắt liveness challenge mặc định trên Pi (góc lệch khó pass)
+  - Tăng exposure/gain cho môi trường ánh sáng yếu
+
+- [ ] **ESP8266 mở rộng** (optional)
+  - LCD I2C hiển thị tên sinh viên sau nhận diện
+  - RFID backup khi face recognition fail liên tiếp
+  - OTA update firmware qua WiFi
 
 ### 🎯 Dài hạn
 
@@ -918,6 +929,11 @@ Nếu gửi ít hơn 5 frames chất lượng tốt trước khi finalize, serve
 | Redis | ✅ Hoạt động | Rate limiting + WS Pub/Sub |
 | Frontend | ✅ Build thành công | Dynamic URL — hoạt động mọi domain |
 | InsightFace | ✅ Load được | buffalo_sc model |
+| Web Kiosk | ✅ Hoạt động | Camera fix cho Pi browser, token qua localStorage |
+| Raspberry Pi Edge | ✅ Hoạt động | Docker ARM64, embedding sync, recognition loop |
+| ESP8266 Firmware | ✅ Viết xong | Web server mode, CORS, state machine — cần flash |
+| Door Relay | ⏳ Chờ test | Cần flash firmware + nhập IP vào Devices page |
+| Magnet Heat | ⚠️ Cần fix | Thêm resistor 33Ω 5W hoặc MOSFET |
 | Face Enrollment (browser) | ⚠️ Endpoint ready | UI chưa fully tested end-to-end |
 | WebSocket (single-worker) | ✅ Tested | `test_ws_broadcast.py` pass |
 | WebSocket (multi-worker) | ✅ Fixed | Redis Pub/Sub — `--workers 2` OK |
@@ -1443,29 +1459,38 @@ docker-compose up -d --build ai-service backend
 
 ### Ưu tiên cao — Cần làm NGAY
 
-1. **Test enrollment end-to-end** — Chạy enrollment, nhìn debug line:
-   - Straight: `yaw ≈ 0°, pitch ≈ 0°` → phải pass step 0
-   - Turn LEFT (physical): `yaw < -20°` → phải pass step 1
-   - Turn RIGHT: `yaw > 20°` → phải pass step 2
-   - Tilt UP: `pitch < -20°` → phải pass step 3
-   - Tilt DOWN: `pitch > 20°` → phải pass step 4
-   - Nếu thresholds sai: điều chỉnh `POSE_STEP_CONFIG` trong `enrollment.py` → rebuild backend
+1. **Flash lại ESP8266** với firmware mới:
+   - Bỏ thư viện `WebSocketsClient` và `ArduinoJson` (không dùng nữa)
+   - Thêm `ESP8266WebServer` (có sẵn trong esp8266 core)
+   - Đổi LED đỏ từ D3/GPIO0 → **D6/GPIO12** (GPIO0 là boot pin, bị kéo LOW → spike flash mode)
+   - Nhập IP ESP8266 vào ô **ESP8266 Door URL** trên trang Devices
+
+2. **Fix magnet overheating** (chọn 1):
+   - **Option A** (đơn giản): Thêm resistor **33Ω 5W** nối tiếp giữa relay NO và Magnet(-)
+   - **Option B** (tối ưu): Dùng MOSFET IRLZ44N + diode 1N4007, set `RELAY_MODE false` trong firmware
+
+3. **Test end-to-end hoàn chỉnh**:
+   - Vào `/devices` → nhấn **"Mở Kiosk"** (lưu token + ESP URL vào localStorage)
+   - Đứng trước camera → LED đỏ nhấp nháy → LED xanh + relay click = thành công
+   - Nhấn exit button → relay mở 3s
 
 ### Ưu tiên trung bình
 
-2. **Test WebSocket real-time** — Mở dashboard, curl `POST /api/attendance/` với device token → xác nhận dashboard cập nhật tức thì.
+4. **Cải thiện nhận diện trên Pi** — Camera góc rộng hơn, tắt liveness challenge mặc định, tăng exposure.
 
-3. **Test Bulk-sync offline** — Stop backend → edge ghi vào SQLite queue → Start lại → xác nhận `POST /api/attendance/bulk-sync` sync thành công.
+5. **Test Bulk-sync offline** — Stop backend → edge ghi SQLite queue → Start lại → xác nhận sync thành công.
 
-4. **Alembic Migrations** — Thay `create_all` bằng Alembic để quản lý DB schema version cho production.
+6. **Watchdog cho edge container** — Tự restart khi crash, health check camera.
 
 ### Ưu tiên thấp / Dài hạn
 
-5. **AWS Deployment** — EC2 + RDS + ElastiCache + ECR/ECS + CloudFront + ALB + HTTPS
+7. **AWS Deployment** — EC2 + RDS + ElastiCache + ECR/ECS + CloudFront + ALB + HTTPS
 
-6. **Mobile App** — React Native cho admin và sinh viên
+8. **Mobile App** — React Native cho admin và sinh viên
 
-7. **Advanced Analytics** — Báo cáo tỷ lệ chuyên cần, export Excel/PDF
+9. **Advanced Analytics** — Báo cáo tỷ lệ chuyên cần, export Excel/PDF
+
+10. **RFID backup** — Dự phòng khi face recognition fail liên tiếp
 
 ---
 
@@ -1600,3 +1625,101 @@ docker-compose up -d --build backend
 ```
 
 Tất cả containers healthy. Backend version 1.0.0 running trên port 8000.
+
+---
+
+### Session 2026-03-04 — Raspberry Pi Deployment + ESP8266 Door Controller + Kiosk Security
+
+#### 1. ✅ Raspberry Pi Edge Deployment
+
+- Build Docker image trên Pi (ARM64) thành công sau khi fix `onnxruntime` → `onnxruntime-aarch64`
+- Fix `AES_KEY` không load đúng trong `.env` trên Pi
+- Embedding sinh viên id=3 "Do Doan Bac" sync thành công: `Loaded 1 embeddings into cache`
+- Camera hoạt động sau reboot: `Camera opened. Recognition loop running...`
+
+#### 2. ✅ Web Kiosk Camera Fix (Pi Browser)
+
+**Vấn đề:** Camera hiển thị black screen trên Chromium Pi, bị kẹt ở "Đang khởi động camera…"
+
+**Nguyên nhân:**
+- `facingMode: "user"` constraint fail trên Pi Linux
+- `oncanplay` event không fire → stuck loading
+- Edge Docker container giữ `/dev/video0`
+
+**Fix:**
+- Bỏ `facingMode`, relaxed constraints (640×480 trước)
+- Thêm `enumerateDevices()` để pin device ID
+- Gọi `setCamReady(true)` ngay sau `play()`, không đợi `oncanplay`
+- Stop edge container để camera free
+
+#### 3. ✅ ESP8266 Door Controller — Kiến trúc Web Server
+
+**Thiết kế cũ (bỏ):** ESP8266 kết nối WebSocket về backend → bị phụ thuộc vào `class_id` hardcode, không linh hoạt đa thiết bị.
+
+**Thiết kế mới:** Backend → HTTP → ESP8266 (web server mode)
+
+```
+Kiosk Browser (cùng LAN với ESP8266)
+    ├── POST /api/attendance/verify-face ──► Backend (Docker)
+    └── POST http://<ESP_IP>/door/scan|open|deny  ◄── Browser gọi trực tiếp
+```
+
+**Tại sao browser gọi ESP8266, không phải backend?**
+Docker container trên Mac bị isolate network → không reach được IP LAN của ESP8266. Browser cùng mạng WiFi → gọi trực tiếp được.
+
+**ESP8266 endpoints:**
+- `POST /door/scan` → LED đỏ nhấp nháy (đang nhận diện)
+- `POST /door/open` → LED xanh + relay mở 3s + 1 beep
+- `POST /door/deny` → LED đỏ nháy nhanh 2s + 3 beep
+- CORS headers thêm vào để browser gọi được (cross-origin)
+
+**GPIO mapping:**
+```
+D1 (GPIO5)  → RELAY
+D2 (GPIO4)  → LED_GREEN
+D6 (GPIO12) → LED_RED  ← đổi từ D3/GPIO0 (boot pin)
+D4 (GPIO2)  → BUZZER
+D5 (GPIO14) → BUTTON (exit, INPUT_PULLUP)
+```
+
+**Libraries:** Chỉ cần `ESP8266WiFi`, `ESP8266WebServer`, `ESP8266HTTPClient` (tất cả bundled với esp8266 core — không cần cài thêm)
+
+**Multi-device setup (linh hoạt):**
+```
+devices table:
+  device 1 → class_id=5, esp8266_url=http://192.168.1.50
+  device 2 → class_id=7, esp8266_url=http://192.168.1.51
+```
+Flash cùng 1 firmware, nhập IP vào Devices page → tự route đúng.
+
+#### 4. ✅ Kiosk Token Security — Không để token trong URL
+
+**Cũ:** `/kiosk/5?token=1e1bc454...` → token lộ trong URL, browser history, server log.
+
+**Mới:**
+- **Devices page**: nút "Mở Kiosk" → `localStorage.setItem("kiosk_token_5", token)` + `localStorage.setItem("kiosk_esp_5", espUrl)` → mở tab `/kiosk/5` (URL sạch)
+- **Kiosk page**: đọc token từ `localStorage` thay vì `useSearchParams`
+- Nếu localStorage trống → hiện màn hình hướng dẫn admin vào Devices page nhấn "Mở Kiosk"
+
+#### 5. ✅ Backend `POST /api/devices/exit` Endpoint
+
+ESP8266 nhấn exit button → gọi backend để log event + broadcast WS cho dashboard.
+```
+POST /api/devices/exit
+Header: X-Device-Token: <token>
+Body: {}
+```
+
+#### 6. 🔧 Lưu ý Hardware
+
+- **GPIO0 (D3) là boot pin** — nếu LED kéo xuống LOW lúc reset → ESP vào flash mode, Serial Monitor trắng tinh. Dùng **D6/GPIO12** thay thế.
+- **Magnet electromagnet nóng** khi giữ liên tục: thêm resistor 33Ω 5W nối tiếp để giảm dòng.
+- **GND isolation**: DO NOT bridge 12V GND với ESP8266 GND — relay có optocoupler cách ly.
+
+#### 7. ✅ Rebuild & Deploy
+
+```bash
+docker compose build backend frontend && docker compose up -d backend frontend
+```
+
+Tất cả containers healthy.

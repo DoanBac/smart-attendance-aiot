@@ -1,4 +1,7 @@
-# ONNX Runtime — use onnxruntime for x86 dev, onnxruntime-arm for RPi
+# ONNX Runtime:
+#   RPi 4 64-bit (aarch64 / arm64): onnxruntime==1.19.2  ← standard pip wheel works
+#   RPi 4 32-bit (armhf): pip install onnxruntime-rpi (community build)
+#   x86 Mac/Linux dev machine: onnxruntime==1.19.2
 onnxruntime==1.19.2
 numpy==1.26.4
 opencv-python-headless==4.10.0.84

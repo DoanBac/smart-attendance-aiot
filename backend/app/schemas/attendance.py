@@ -36,3 +36,22 @@ class AttendanceReport(BaseModel):
     class_name: str
     total_sessions: int
     student_stats: List[dict]
+
+
+# ── Web Kiosk Verify ─────────────────────────────────────────────────────────
+class VerifyFaceRequest(BaseModel):
+    image_b64: str          # Raw base64 JPEG (đặc không có tiền tố data:image/)
+    class_id: int
+    challenge_dir: Optional[str] = None  # "left" | "right" — pose liveness challenge
+
+
+class VerifyFaceResponse(BaseModel):
+    matched: bool
+    student_id: Optional[int] = None
+    student_name: Optional[str] = None
+    student_code: Optional[str] = None
+    confidence: float = 0.0
+    # "present" | "already_marked" | "unknown" | "no_face" | "error"
+    status: str
+    message: str
+    attendance_id: Optional[int] = None

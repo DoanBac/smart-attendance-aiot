@@ -9,6 +9,13 @@ class DeviceRegister(BaseModel):
     class_id: Optional[int] = None
 
 
+class DeviceUpdate(BaseModel):
+    device_name: Optional[str] = None
+    location: Optional[str] = None
+    class_id: Optional[int] = None
+    esp8266_url: Optional[str] = None
+
+
 class DeviceHeartbeat(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
@@ -32,6 +39,7 @@ class DeviceResponse(BaseModel):
     location: Optional[str] = None
     firmware_version: Optional[str] = None
     model_version: Optional[str] = None
+    esp8266_url: Optional[str] = None
     status: str
     last_heartbeat: Optional[datetime] = None
     created_at: Optional[datetime] = None

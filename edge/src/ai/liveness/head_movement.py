@@ -34,7 +34,7 @@ class HeadPoseEstimator:
         success, rvec, tvec = cv2.solvePnP(
             MODEL_POINTS_5, img_pts,
             self.camera_matrix, self.dist_coeffs,
-            flags=cv2.SOLVEPNP_ITERATIVE
+            flags=cv2.SOLVEPNP_EPNP
         )
         if not success:
             return 0.0, 0.0, 0.0
