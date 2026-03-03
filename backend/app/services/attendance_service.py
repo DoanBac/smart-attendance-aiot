@@ -77,8 +77,24 @@ async def bulk_sync_attendance(
             synced_from_edge="Y",
         )
         db.add(record)
+        await db.flush()
+        await db.refresh(record)
         saved += 1
-    await db.flush()
+
+        # Broadcast realtime update tới Dashboard (cùng pipeline với create_attendance)
+        from app.websocket.attendance_ws import broadcast_attendance
+        await broadcast_attendance(record.class_id, {
+            "id": record.id,
+            "student_id": record.student_id,
+            "student_name": None,
+            "class_id": record.class_id,
+            "timestamp": record.timestamp.isoformat() if record.timestamp else None,
+            "confidence": record.confidence,
+            "liveness_score": record.liveness_score,
+            "status": record.status,
+            "method": record.method,
+        })
+
     return saved
 
 async def get_class_attendance(

@@ -138,8 +138,8 @@ def run():
     student_id = student["id"]
     info(f"Student  id={student_id}  code={student['student_code']}  name={student['full_name']}")
 
-    r = requests.patch(f"{local_api}/api/students/{student_id}",
-                       json={"class_id": class_id}, headers=headers)
+    r = requests.put(f"{local_api}/api/students/{student_id}",
+                     json={"class_id": class_id}, headers=headers)
     if r.status_code not in (200, 201):
         fail(f"Assign student {r.status_code}", r.text[:200])
     else:
