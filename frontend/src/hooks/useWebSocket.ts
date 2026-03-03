@@ -1,14 +1,16 @@
 import { useEffect, useRef } from "react";
 import { useAttendanceStore } from "@/store/attendance-store";
+import { getWsBase } from "@/lib/api";
 
 export function useWebSocket(deviceId?: string) {
   const ws = useRef<WebSocket | null>(null);
   const addRealtimeRecord = useAttendanceStore((s) => s.addRealtimeRecord);
 
   useEffect(() => {
+    const wsBase = getWsBase();
     const url = deviceId
-      ? `ws://localhost:8000/ws/attendance/${deviceId}`
-      : `ws://localhost:8000/ws/attendance`;
+      ? `${wsBase}/ws/attendance/${deviceId}`
+      : `${wsBase}/ws/attendance`;
 
     ws.current = new WebSocket(url);
 

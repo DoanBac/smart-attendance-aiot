@@ -15,6 +15,7 @@ class Device(Base):
     status           = Column(String(10), default="active")   # active | inactive | error
     firmware_version = Column(String(20), nullable=True)
     model_version    = Column(String(20), nullable=True)
+    esp8266_url      = Column(String(200), nullable=True)  # e.g. http://192.168.1.x/open
     created_at       = Column(DateTime, default=func.now())
 
     # Relationships

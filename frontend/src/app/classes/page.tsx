@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { getApiBase } from "@/lib/api";
 import { BookOpen, Plus } from "lucide-react";
 
 interface Class {
@@ -19,7 +20,7 @@ export default function ClassesPage() {
   const [form, setForm] = useState({ class_code: "", class_name: "", subject: "", room: "", semester: "" });
   const [saving, setSaving] = useState(false);
 
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const base = getApiBase();
   const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : "";
 
   const fetchClasses = () => {

@@ -20,7 +20,7 @@ router = APIRouter()
 # ── Blur threshold ─────────────────────────────────────────────────────────────
 # Set to 0.0 to disable blur check entirely for debugging.
 # Once enrollment works, raise back to 15.0-25.0.
-MIN_BLUR_ENROLLMENT = 0.0
+MIN_BLUR_ENROLLMENT = 20.0   # Laplacian variance threshold — frames below this are blurry
 
 # Redis key pattern: enrollment:{student_id} -> JSON list of base64-encoded embeddings
 # TTL: 30 minutes - session auto-deleted if admin abandons enrollment
@@ -43,11 +43,9 @@ _INF = float("inf")
 POSE_STEP_CONFIG = [
     # Geometric landmark method — yaw/pitch centered at 0° for frontal face.
     #
-    # Yaw sign: nose shifts LEFT in image → yaw > 0 (subject turns their RIGHT)
-    #           nose shifts RIGHT in image → yaw < 0 (subject turns their LEFT)
-    # With mirror (CSS scaleX -1):
-    #   "Turn LEFT" instruction → physical left → in raw frame nose goes RIGHT → yaw < 0
-    #   "Turn RIGHT" instruction → physical right → in raw frame nose goes LEFT → yaw > 0
+    # Yaw sign (InsightFace raw frame, webcam mirrored):
+    #   physical LEFT turn  → nose moves to RIGHT side of image → yaw > 0
+    #   physical RIGHT turn → nose moves to LEFT  side of image → yaw < 0
     #
     # step 0 — Look straight
     {
@@ -55,30 +53,29 @@ POSE_STEP_CONFIG = [
         "yaw_range":   (-20.0,  20.0),
         "pitch_range": (-20.0,  20.0),
     },
-    # step 1 — Turn head LEFT (physical left, mirror shows moving right)
-    # In raw frame: nose moves to image right → yaw < 0
+    # step 1 — Turn head LEFT (physical left → raw frame yaw > 0)
     {
         "instruction": "Please turn your head to the LEFT",
-        "yaw_range":   (-_INF, -20.0),
+        "yaw_range":   (20.0,  _INF),
         "pitch_range": (-40.0,  40.0),
     },
-    # step 2 — Turn head RIGHT → in raw frame: nose moves left → yaw > 0
+    # step 2 — Turn head RIGHT (physical right → raw frame yaw < 0)
     {
         "instruction": "Please turn your head to the RIGHT",
-        "yaw_range":   (20.0,  _INF),
+        "yaw_range":   (-_INF, -20.0),
         "pitch_range": (-40.0,  40.0),
     },
     # step 3 — Tilt UP (chin raised)
     {
         "instruction": "Please tilt your head UP (raise your chin)",
         "yaw_range":   (-35.0,  35.0),
-        "pitch_range": (-_INF, -20.0),
+        "pitch_range": (20.0,  _INF),
     },
-    # step 4 — Tilt DOWN (lower chin)
+    # step 4 — Tilt DOWN (lower chin) → pitch < 0
     {
         "instruction": "Please tilt your head DOWN (lower your chin)",
         "yaw_range":   (-35.0,  35.0),
-        "pitch_range": (20.0,  _INF),
+        "pitch_range": (-_INF, -20.0),
     },
     # step 5 — Straight again (confirm)
     {

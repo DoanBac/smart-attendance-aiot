@@ -21,6 +21,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Pre-create model dir (InsightFace downloads here on first boot)
 RUN mkdir -p /app/models
 
+# Download anti-spoof MobileNetV3 ONNX model (11.7 MB) to a SEPARATE path
+# IMPORTANT: /app/models is overridden by the insightface_models Docker volume
+# so we store anti-spoof model in /app/antispoof/ which is NOT volume-mounted
+# Source: Intel OpenVINO Open Model Zoo — MIT License
+# Trained on CelebA-Spoof (625k images, 43 spoof types), ACER=3.81%
+RUN mkdir -p /app/antispoof && \
+    curl -fsSL \
+    "https://storage.openvinotoolkit.org/repositories/open_model_zoo/public/2022.1/anti-spoof-mn3/anti-spoof-mn3.onnx" \
+    -o /app/antispoof/anti-spoof-mn3.onnx && \
+    echo "anti-spoof-mn3.onnx downloaded: $(du -sh /app/antispoof/anti-spoof-mn3.onnx)"
+
 COPY . .
 
 EXPOSE 9000

@@ -7,7 +7,7 @@ from app.database.session import get_db
 from app.models.admin import Admin
 from app.models.device import Device
 from app.core.security import get_current_admin, verify_device_token
-from app.schemas.device import DeviceRegister, DeviceHeartbeat, DeviceResponse
+from app.schemas.device import DeviceRegister, DeviceHeartbeat, DeviceResponse, DeviceUpdate
 from app.services.device_service import register_device, update_heartbeat
 
 router = APIRouter()
@@ -29,6 +29,46 @@ async def heartbeat(
 ):
     await update_heartbeat(db, device, data)
     return {"status": "ok", "device_id": device.id}
+
+@router.patch("/{device_id}", response_model=DeviceResponse)
+async def update_device(
+    device_id: int,
+    data: DeviceUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: Admin = Depends(get_current_admin),
+):
+    """Update device fields (name, location, class_id, esp8266_url)."""
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is None:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Device not found")
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(device, field, value)
+    await db.flush()
+    await db.refresh(device)
+    return device
+
+
+@router.post("/exit", response_model=dict)
+async def door_exit(
+    db: AsyncSession = Depends(get_db),
+    device: Device = Depends(verify_device_token),
+):
+    """
+    ESP8266 exit button: broadcast door_unlock WS event so other clients know,
+    then return 200. Optionally log exit to a future access_log table.
+    """
+    from app.websocket.attendance_ws import broadcast_door
+    class_id = device.class_id
+    if class_id:
+        await broadcast_door(class_id, {
+            "event": "door_unlock",
+            "class_id": class_id,
+            "reason": "exit_button",
+        })
+    return {"status": "ok", "device_id": device.id, "class_id": class_id}
+
 
 @router.get("/", response_model=List[DeviceResponse])
 async def list_devices(

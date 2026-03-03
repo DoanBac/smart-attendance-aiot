@@ -15,5 +15,6 @@ httpx==0.27.2
 redis==5.1.1
 numpy==1.26.4
 email-validator==2.2.0
+openpyxl==3.1.5
 # ── AI packages đã chuyển sang ai-service/ ───────────────
 # insightface, onnxruntime, opencv, Pillow, scipy → ai-service/requirements.txt

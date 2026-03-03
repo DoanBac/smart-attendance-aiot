@@ -14,7 +14,7 @@ from edge.src.ai.face_alignment import align_face, enhance_image
 from edge.src.ai.face_embedding import FaceEmbedder
 from edge.src.ai.liveness.blink_detection import BlinkDetector
 from edge.src.ai.liveness.head_movement import HeadPoseEstimator, HeadMovementChecker
-from edge.src.ai.liveness.depth_estimation import DepthLivenessChecker
+from edge.src.ai.liveness.depth_estimator import DepthLivenessChecker
 
 logger = logging.getLogger(__name__)
 

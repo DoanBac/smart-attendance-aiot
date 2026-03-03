@@ -855,36 +855,42 @@ Nếu gửi ít hơn 5 frames chất lượng tốt trước khi finalize, serve
 
 - [x] **Migrate enrollment sessions sang Redis** — ✅ DONE (session 2026-03-01)
 - [x] **Fix JWT secret** — ✅ DONE (session 2026-03-01)
-- [ ] **Test WebSocket** — xác nhận real-time update dashboard
-- [ ] **Test bulk-sync** — simulate offline scenario
-- [x] **Frontend pages** — ✅ DONE — toàn bộ UI đã dịch sang tiếng Anh
-- [ ] **Face enrollment UI** — hoàn thiện flow webcam capture trên browser (endpoint ready, cần test end-to-end)
-- [ ] **Liveness UI** — hiển thị hướng dẫn (nháy mắt, quay đầu) cho người dùng
+- [x] **WebSocket real-time broadcast** — ✅ DONE (session 2026-03-02) — Redis Pub/Sub multi-worker fix
+- [x] **Alembic Migrations** — ✅ DONE (session 2026-03-02) — full setup, initial migration generated
+- [x] **AWS CDK Deployment files** — ✅ DONE (session 2026-03-02) — infra/ directory
+- [x] **Cloudflare Tunnel + nginx** — ✅ DONE (session 2026-03-02) — PC-as-cloud, zero cost
+- [x] **Frontend dynamic URL** — ✅ DONE (session 2026-03-02) — `getApiBase()` / `getWsBase()`
+- [x] **Raspberry Pi edge deployment** — ✅ DONE (session 2026-03-04) — Docker build, AES_KEY fix, embedding sync OK
+- [x] **Web Kiosk camera fix (Pi browser)** — ✅ DONE (session 2026-03-04) — relaxed constraints, `enumerateDevices()`, `setCamReady` after `play()`
+- [x] **ESP8266 Door Controller firmware** — ✅ DONE (session 2026-03-04) — `ESP8266WebServer`, state machine, CORS, exit button
+- [x] **Backend `POST /api/devices/exit` endpoint** — ✅ DONE (session 2026-03-04)
+- [x] **Kiosk token bảo mật** — ✅ DONE (session 2026-03-04) — token lưu `localStorage`, URL sạch `/kiosk/{classId}`
+- [x] **ESP8266 gọi từ browser (CÙNG mạng LAN)** — ✅ DONE (session 2026-03-04) — Docker backend không reach được ESP8266 → browser gọi trực tiếp
+- [ ] **Fix LED_RED GPIO0 boot issue** — đổi sang D6/GPIO12, cần flash lại ESP8266
+- [ ] **Magnet overheating** — thêm resistor 33Ω 5W hoặc MOSFET peak-and-hold
+- [ ] **Test end-to-end hoàn chỉnh** — face scan → ESP8266 relay click → door open
 
 ### 🏗️ Trung hạn (1-2 tháng)
 
-- [ ] **AWS Deployment**
-  - EC2 (t3.medium) cho Backend + Frontend
-  - RDS PostgreSQL (db.t3.micro)
-  - ElastiCache Redis
-  - ECR + ECS hoặc EKS
-  - CloudFront CDN cho Frontend
-  - Application Load Balancer + HTTPS (ACM)
+- [x] **AWS CDK Deployment** — ✅ DONE (session 2026-03-02) — EC2 + RDS + ElastiCache (xem `infra/`)
+- [x] **PC-as-Cloud (Cloudflare Tunnel)** — ✅ DONE (session 2026-03-02) — miễn phí, zero config
+- [x] **Edge Device thực tế (Raspberry Pi 4)** — ✅ DONE (session 2026-03-04) — Docker running, face sync, recognition loop
+- [x] **ESP8266 Door Lock Controller** — ✅ DONE (session 2026-03-04) — web server mode, multi-device linh hoạt
 
-- [ ] **Edge Firmware thực tế**
-  - Test trên Raspberry Pi 4
-  - Camera stream với CSI Camera Module
-  - Watchdog để auto-restart
+- [ ] **Edge Firmware hoàn thiện**
+  - Watchdog auto-restart khi crash
   - OTA firmware update qua Cloud
+  - Camera stream với CSI Camera Module
 
-- [ ] **ESP32 Integration** (optional)
-  - ESP32-CAM capture frame → gửi lên Pi qua UART/WiFi
-  - LED indicator (xanh: present, đỏ: not recognized)
-  - LCD hiển thị tên sinh viên sau khi nhận diện
+- [ ] **Cải thiện nhận diện trên Pi**
+  - Camera chất lượng cao hơn (Sony IMX519)
+  - Tắt liveness challenge mặc định trên Pi (góc lệch khó pass)
+  - Tăng exposure/gain cho môi trường ánh sáng yếu
 
-- [ ] **Alembic Migrations**
-  - Thay `create_all` bằng Alembic cho production DB migrations
-  - Version control schema changes
+- [ ] **ESP8266 mở rộng** (optional)
+  - LCD I2C hiển thị tên sinh viên sau nhận diện
+  - RFID backup khi face recognition fail liên tiếp
+  - OTA update firmware qua WiFi
 
 ### 🎯 Dài hạn
 
@@ -920,17 +926,26 @@ Nếu gửi ít hơn 5 frames chất lượng tốt trước khi finalize, serve
 |---|---|---|
 | Backend API | ✅ Hoạt động | Tất cả endpoints tested |
 | PostgreSQL | ✅ Hoạt động | Có test data |
-| Redis | ✅ Hoạt động | Rate limiting active |
-| Frontend | ✅ Build thành công | Login, Students pages verified |
+| Redis | ✅ Hoạt động | Rate limiting + WS Pub/Sub |
+| Frontend | ✅ Build thành công | Dynamic URL — hoạt động mọi domain |
 | InsightFace | ✅ Load được | buffalo_sc model |
-| Face Enrollment (browser) | ⚠️ Endpoint ready | UI chưa fully tested |
-| WebSocket | ⚠️ Code ready | Chưa test end-to-end |
-| Edge Device | ⚠️ Code ready | Cần hardware để test |
+| Web Kiosk | ✅ Hoạt động | Camera fix cho Pi browser, token qua localStorage |
+| Raspberry Pi Edge | ✅ Hoạt động | Docker ARM64, embedding sync, recognition loop |
+| ESP8266 Firmware | ✅ Viết xong | Web server mode, CORS, state machine — cần flash |
+| Door Relay | ⏳ Chờ test | Cần flash firmware + nhập IP vào Devices page |
+| Magnet Heat | ⚠️ Cần fix | Thêm resistor 33Ω 5W hoặc MOSFET |
+| Face Enrollment (browser) | ⚠️ Endpoint ready | UI chưa fully tested end-to-end |
+| WebSocket (single-worker) | ✅ Tested | `test_ws_broadcast.py` pass |
+| WebSocket (multi-worker) | ✅ Fixed | Redis Pub/Sub — `--workers 2` OK |
+| Alembic Migrations | ✅ Hoạt động | `start.sh` chạy `alembic upgrade head` tự động |
+| Nginx reverse proxy | ✅ Hoạt động | Port 80 gom backend + frontend + WS |
+| Cloudflare Tunnel | ✅ Config sẵn | `docker compose up -d cloudflared` → public URL |
+| AWS CDK (infra/) | ✅ Code ready | EC2 + RDS + ElastiCache — chưa deploy thật |
+| Edge Heartbeat | ✅ Tested | Qua Cloudflare URL |
+| Edge GET embeddings | ✅ Tested | Qua Cloudflare URL |
+| Edge Bulk-sync | ⚠️ Partial | POST OK nhưng WS broadcast chưa fire |
 | AES Encryption | ✅ Hoạt động | AES-256-GCM |
 | JWT Auth | ✅ Hoạt động | Email-based |
-| Device Heartbeat | ✅ Hoạt động | Tested |
-| Bulk Sync | ⚠️ Code ready | Chưa test offline scenario |
-| Alembic Migrations | ❌ Chưa | Dùng `create_all` tạm |
 
 ---
 
@@ -1193,6 +1208,101 @@ InsightFace load trong background thread → uvicorn start ngay → healthcheck 
 
 ---
 
+### Session 2026-03-02 (phần 4) — Student CRUD hoàn chỉnh + Student ID format
+
+**Vấn đề được báo cáo:** Màn hình quản lý sinh viên chưa có form thêm mới, sửa, xóa mềm. Student ID đang là số tự do (admin tự nhập), không có format chuẩn.
+
+---
+
+#### 1. ✅ Student ID format: FSB001, FSB002, … (auto-generate)
+
+**Lý do chọn `FSB` prefix:**
+- `F` = FPT, `SB` = School of Business (hoặc tùy chỉnh theo trường)
+- Format `FSBxxx`: ngắn, đọc được, dễ nhớ
+- Hệ thống chuyên nghiệp thực tế dùng `[PREFIX][YEAR][SEQ]` (VD: `FIT2024001`) hoặc `[PREFIX][SEQ]` (VD: `FSB001`) — dự án này chọn kiểu thứ 2 cho đơn giản
+
+**Thay đổi backend:**
+
+`backend/app/services/student_service.py` — thêm hàm `generate_student_code()`:
+```python
+async def generate_student_code(db) -> str:
+    # Lấy MAX số suffix của các code dạng FSBxxx
+    # Trả về FSB001, FSB002, ... FSB999, FSB1000 (tự mở rộng)
+```
+
+`backend/app/schemas/student.py` — `student_code` trở thành optional:
+```python
+class StudentCreate(BaseModel):
+    student_code: Optional[str] = None  # None → auto FSBxxx
+```
+
+`backend/app/api/routes/students.py` — `POST /api/students/`:
+- Nếu `student_code` không truyền → gọi `generate_student_code()`
+- Nếu truyền → validate không trùng như cũ
+
+---
+
+#### 2. ✅ Soft-delete (Deactivate) thay vì hard-delete
+
+**Trước:** `DELETE /{id}` gọi `delete_student_data()` → set `status=inactive` + xóa attendance + xóa embedding (hành vi không rõ ràng, không thể undo)
+
+**Sau — 2 endpoint phân biệt rõ:**
+
+| Endpoint | Hành vi |
+|---|---|
+| `PATCH /{id}/deactivate` | Soft-delete: `status=inactive`, xóa face embedding (GDPR). Attendance history GIỮ LẠI |
+| `PATCH /{id}/activate` | Re-activate: `status=active` (cần đăng ký face lại) |
+| `DELETE /{id}` | Hard-delete (admin only): xóa hoàn toàn student + attendance |
+
+---
+
+#### 3. ✅ Backend API mới thêm
+
+| Endpoint | Ghi chú |
+|---|---|
+| `GET /api/students/?include_inactive=true` | Tham số mới: hiện cả sinh viên đã deactivate |
+| `PATCH /api/students/{id}/deactivate` | Soft-delete với GDPR biometric erase |
+| `PATCH /api/students/{id}/activate` | Re-activate |
+
+---
+
+#### 4. ✅ Frontend — Student List page (`students/page.tsx`)
+
+**Tính năng mới:**
+- **"Add Student" button** → mở modal form (Full Name, Student ID optional, Email, Phone, Class)
+  - Để trống Student ID → backend tự sinh `FSBxxx`
+  - Admin có thể override bằng code tùy chỉnh
+- **"Deactivate" button** trên mỗi dòng → confirm modal → deactivate
+- **"Activate" button** cho các sinh viên inactive → re-activate ngay
+- **"Show inactive" checkbox** → toggle hiện/ẩn sinh viên không còn hoạt động
+- **Class name** hiển thị tên lớp thay vì ID số
+- Table sort theo `student_code` (FSB001, FSB002…)
+
+---
+
+#### 5. ✅ Frontend — Student Detail page (`students/[id]/page.tsx`)
+
+**Tính năng mới:**
+- **"Edit Info" button** → chuyển sang inline edit form (full_name, email, phone, class)
+  - Save → PUT `/api/students/{id}` → refresh
+  - Cancel → quay lại view mode
+  - Success toast xuất hiện 3 giây sau khi save
+- **"Deactivate" button** (Active) / **"Activate" button** (Inactive) → confirm modal
+- Badge status (Active/Inactive) luôn hiển thị rõ
+- Class name hiển thị tên lớp thay vì ID
+
+---
+
+#### 6. ✅ Rebuild Docker
+
+```bash
+docker-compose up -d --build backend frontend
+```
+
+Tất cả containers build thành công và running.
+
+---
+
 ### Session 2026-03-02 (phần 3) — Fix Pose Validation & Head Pose Estimation
 
 **Vấn đề được báo cáo:** Sau khi fix JWT 401, enrollment vẫn thất bại với lỗi:
@@ -1321,17 +1431,22 @@ docker-compose up -d --build ai-service backend
 
 ---
 
-## 📊 Trạng thái hiện tại (Cập nhật 2026-03-02 phần 3)
+## 📊 Trạng thái hiện tại (Cập nhật 2026-03-02 phần 5)
 
 | Component | Status | Ghi chú |
 |---|---|---|
-| Backend API | ✅ Hoạt động | POSE_STEP_CONFIG geometric convention, MIN_BLUR=0 (temp) |
+| Backend API | ✅ Hoạt động | POSE_STEP_CONFIG geometric, MIN_BLUR=20.0, CORS restricted, Rate Limit Redis |
 | **AI Face Service** | ✅ Hoạt động | Geometric pose method, không còn solvePnP |
 | PostgreSQL | ✅ Hoạt động | Có test data |
-| Redis | ✅ Hoạt động | Enrollment sessions (TTL 30 phút) |
+| Redis | ✅ Hoạt động | Enrollment sessions (TTL 30') + Rate limiting |
 | Frontend | ✅ Build thành công | Mirror video, 401 detection, yaw/pitch debug |
+| **Student CRUD UI** | ✅ Hoàn chỉnh | Add modal, Edit, Soft-delete, Activate, Show inactive |
+| **Face Enrollment UI** | ✅ Hoàn chỉnh | Student picker dropdown (FSBxxx search), auto-select từ URL |
+| **Student ID auto-gen** | ✅ Hoàn chỉnh | Format FSB001, FSB002… (tự tăng, có thể override) |
 | JWT Auth | ✅ Fixed | Key cố định + dual-key decode |
-| Face Enrollment | ⚠️ **Cần test lại** | Geometric pose fix deployed, chờ user verify |
+| **CORS** | ✅ Fixed | `ALLOWED_ORIGINS` configurable via `.env`, không còn `"*"` |
+| **Rate Limiter** | ✅ Fixed | Redis-backed fixed window, fail-open khi Redis down |
+| Face Enrollment | ⚠️ Cần test | Geometric pose fix + MIN_BLUR=20 deployed, chờ user verify |
 | Face Identify | ✅ Refactored | AES decrypt local → ai-service /identify |
 | WebSocket | ✅ Fixed | prefix /ws, broadcast attendance |
 | Attendance REST | ✅ Tested | POST + GET hoạt động |
@@ -1344,44 +1459,38 @@ docker-compose up -d --build ai-service backend
 
 ### Ưu tiên cao — Cần làm NGAY
 
-1. **Test enrollment sau fix geometric pose** — Chạy enrollment, nhìn debug line:
-   - Straight: `yaw ≈ 0°, pitch ≈ 0°` → phải pass step 0
-   - Turn LEFT (physical): `yaw < -20°` → phải pass step 1
-   - Turn RIGHT: `yaw > 20°` → phải pass step 2
-   - Tilt UP: `pitch < -20°` → phải pass step 3
-   - Tilt DOWN: `pitch > 20°` → phải pass step 4
-   - Nếu thresholds sai: điều chỉnh `POSE_STEP_CONFIG` trong `enrollment.py` → `docker-compose up -d --build backend`
+1. **Flash lại ESP8266** với firmware mới:
+   - Bỏ thư viện `WebSocketsClient` và `ArduinoJson` (không dùng nữa)
+   - Thêm `ESP8266WebServer` (có sẵn trong esp8266 core)
+   - Đổi LED đỏ từ D3/GPIO0 → **D6/GPIO12** (GPIO0 là boot pin, bị kéo LOW → spike flash mode)
+   - Nhập IP ESP8266 vào ô **ESP8266 Door URL** trên trang Devices
 
-2. **Restore MIN_BLUR_ENROLLMENT** — Sau khi enrollment pass, đặt lại:
-   ```python
-   # backend/app/api/routes/enrollment.py
-   MIN_BLUR_ENROLLMENT = 15.0  # Hoặc 20.0 — test với webcam thực tế
-   ```
-   Rebuild: `docker-compose up -d --build backend`
+2. **Fix magnet overheating** (chọn 1):
+   - **Option A** (đơn giản): Thêm resistor **33Ω 5W** nối tiếp giữa relay NO và Magnet(-)
+   - **Option B** (tối ưu): Dùng MOSFET IRLZ44N + diode 1N4007, set `RELAY_MODE false` trong firmware
 
-3. **Commit code sau khi enrollment hoạt động ổn định.**
+3. **Test end-to-end hoàn chỉnh**:
+   - Vào `/devices` → nhấn **"Mở Kiosk"** (lưu token + ESP URL vào localStorage)
+   - Đứng trước camera → LED đỏ nhấp nháy → LED xanh + relay click = thành công
+   - Nhấn exit button → relay mở 3s
 
 ### Ưu tiên trung bình
 
-4. **Test WebSocket real-time** — Mở dashboard, dùng curl/Postman gọi `POST /api/attendance/` với device token → xác nhận dashboard cập nhật tức thì.
+4. **Cải thiện nhận diện trên Pi** — Camera góc rộng hơn, tắt liveness challenge mặc định, tăng exposure.
 
-5. **Test Bulk-sync offline** — Stop backend → edge ghi vào SQLite queue → Start backend lại → xác nhận `POST /api/attendance/bulk-sync` sync thành công.
+5. **Test Bulk-sync offline** — Stop backend → edge ghi SQLite queue → Start lại → xác nhận sync thành công.
 
-6. **Alembic Migrations** — Thay `create_all` bằng Alembic để quản lý DB schema version cho production.
-
-7. **CORS restrict** — Đổi `allow_origins=["*"]` → restrict về domain cụ thể trong production.
-
-8. **Rate Limiter → Redis** — `rate_limiter.py` hiện vẫn dùng in-memory dict. Nên migrate sang Redis (tương tự enrollment sessions) để share giữa multiple backend instances.
+6. **Watchdog cho edge container** — Tự restart khi crash, health check camera.
 
 ### Ưu tiên thấp / Dài hạn
 
-9. **AWS Deployment** — EC2 + RDS + ElastiCache + ECR/ECS + CloudFront + ALB + HTTPS
+7. **AWS Deployment** — EC2 + RDS + ElastiCache + ECR/ECS + CloudFront + ALB + HTTPS
 
-10. **Alembic** — DB schema migrations thay create_all
+8. **Mobile App** — React Native cho admin và sinh viên
 
-11. **Mobile App** — React Native cho admin và sinh viên
+9. **Advanced Analytics** — Báo cáo tỷ lệ chuyên cần, export Excel/PDF
 
-10. **Advanced Analytics** — Báo cáo tỷ lệ chuyên cần, export Excel/PDF
+10. **RFID backup** — Dự phòng khi face recognition fail liên tiếp
 
 ---
 
@@ -1440,4 +1549,177 @@ docker-compose up -d --build backend frontend
 
 ---
 
-*Cập nhật lần cuối: 2026-03-02 (phần 3) — Fix head pose estimation: bỏ solvePnP (back-of-head 180° bug), thay bằng geometric landmark method. Fix 401 detection trên frontend. POSE_STEP_CONFIG cập nhật theo geometric convention. Chờ verify enrollment end-to-end.*
+*Cập nhật lần cuối: 2026-03-02 (phần 4) — Student CRUD hoàn chỉnh: Add modal (FSBxxx auto-gen), Edit inline, Soft-deactivate/Activate, Show inactive toggle. Backend: generate_student_code(), PATCH /deactivate, PATCH /activate, GET ?include_inactive.*
+
+---
+
+### Session 2026-03-02 (phần 5) — Face Enrollment UI fix + CORS + Rate Limiter Redis
+
+#### 1. ✅ Fix Face Enrollment page — Student Picker Dropdown
+
+**Vấn đề:** Input `type="number"` block gõ chữ (FSB001). Không có dropdown chọn sinh viên — admin phải gõ DB ID số thủ công.
+
+**Fix:**
+- Bỏ `type="number"` input. Thay bằng **searchable student combobox**
+- Fetch `GET /api/students/?include_inactive=false` khi mount → load danh sách students
+- Gõ tìm theo tên hoặc mã FSBxxx → dropdown lọc realtime
+- Khi chọn: hiện chip `FSB001 — Nguyen Van A` với nút × để đổi
+- Internal lưu `selectedStudent.id` (integer DB id) → truyền vào API đúng format
+- Auto-select khi đến từ `?student_id=X` URL param (từ student detail page)
+- Thêm **per-row "Enroll" button** (màu tím) trong bảng `students/page.tsx` → link thẳng đến enrollment với student đó đã pre-selected
+- Success message hiện `FSB001 — Nguyen Van A` thay vì `student #5`
+- Cảnh báo `⚠️ Already has face data — will be overwritten` nếu student đã có face
+
+#### 2. ✅ Restore MIN_BLUR_ENROLLMENT = 20.0
+
+Trước đó đặt `0.0` để debug (bỏ qua blur check). Đã restore về `20.0` (Laplacian variance threshold — loại bỏ frame bị blur/motion blur).
+
+#### 3. ✅ CORS — Configurable via settings
+
+**Trước:** `allow_origins=["*"]` hardcode trong `main.py` — không an toàn, không configurable.
+
+**Sau:**
+- `config.py`: `ALLOWED_ORIGINS: List[str]` với validator hỗ trợ JSON string từ `.env`
+- `main.py`: `allow_origins=settings.ALLOWED_ORIGINS`
+- `.env`: `ALLOWED_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]`
+- Production: thêm domain thật vào `.env`, rebuild backend
+
+**Verify:**
+```bash
+# Origin hợp lệ → trả access-control-allow-origin header
+curl -I -H "Origin: http://localhost:3000" -X OPTIONS http://localhost:8000/api/students/
+# → access-control-allow-origin: http://localhost:3000 ✅
+
+# Origin lạ → không có header → bị block
+curl -I -H "Origin: http://evil.com" -X OPTIONS http://localhost:8000/api/students/
+# → (trống) ✅
+```
+
+#### 4. ✅ Rate Limiter — Redis-backed (bỏ in-memory dict)
+
+**Trước:** `rate_limiter.py` dùng `defaultdict(list)` in-memory → bị mất khi restart, không shared giữa multiple instances.
+
+**Sau — Fixed window với Redis:**
+```
+Key:   rate_limit:{client_ip}:{unix_epoch // period}
+Value: INCR counter (atomic)
+TTL:   period × 2 (auto-expire sau 2 windows)
+```
+
+**Tính năng:**
+- `Retry-After` header trả về số giây còn lại đến khi window mới
+- **Fail-open**: nếu Redis down → request được phép qua (không block traffic hợp lệ), log warning
+- WebSocket upgrade vẫn bỏ qua (không thể handle bằng BaseHTTPMiddleware)
+- Rate limit shared giữa tất cả uvicorn workers
+
+**Redis key verify sau rebuild:**
+```bash
+docker exec smart-attendance-aiot-redis-1 redis-cli KEYS "rate_limit:*"
+# → rate_limit:xxx.xxx.xxx.xxx:29540870 ✅
+```
+
+#### 5. ✅ Rebuild & Deploy
+
+```bash
+docker-compose up -d --build backend
+```
+
+Tất cả containers healthy. Backend version 1.0.0 running trên port 8000.
+
+---
+
+### Session 2026-03-04 — Raspberry Pi Deployment + ESP8266 Door Controller + Kiosk Security
+
+#### 1. ✅ Raspberry Pi Edge Deployment
+
+- Build Docker image trên Pi (ARM64) thành công sau khi fix `onnxruntime` → `onnxruntime-aarch64`
+- Fix `AES_KEY` không load đúng trong `.env` trên Pi
+- Embedding sinh viên id=3 "Do Doan Bac" sync thành công: `Loaded 1 embeddings into cache`
+- Camera hoạt động sau reboot: `Camera opened. Recognition loop running...`
+
+#### 2. ✅ Web Kiosk Camera Fix (Pi Browser)
+
+**Vấn đề:** Camera hiển thị black screen trên Chromium Pi, bị kẹt ở "Đang khởi động camera…"
+
+**Nguyên nhân:**
+- `facingMode: "user"` constraint fail trên Pi Linux
+- `oncanplay` event không fire → stuck loading
+- Edge Docker container giữ `/dev/video0`
+
+**Fix:**
+- Bỏ `facingMode`, relaxed constraints (640×480 trước)
+- Thêm `enumerateDevices()` để pin device ID
+- Gọi `setCamReady(true)` ngay sau `play()`, không đợi `oncanplay`
+- Stop edge container để camera free
+
+#### 3. ✅ ESP8266 Door Controller — Kiến trúc Web Server
+
+**Thiết kế cũ (bỏ):** ESP8266 kết nối WebSocket về backend → bị phụ thuộc vào `class_id` hardcode, không linh hoạt đa thiết bị.
+
+**Thiết kế mới:** Backend → HTTP → ESP8266 (web server mode)
+
+```
+Kiosk Browser (cùng LAN với ESP8266)
+    ├── POST /api/attendance/verify-face ──► Backend (Docker)
+    └── POST http://<ESP_IP>/door/scan|open|deny  ◄── Browser gọi trực tiếp
+```
+
+**Tại sao browser gọi ESP8266, không phải backend?**
+Docker container trên Mac bị isolate network → không reach được IP LAN của ESP8266. Browser cùng mạng WiFi → gọi trực tiếp được.
+
+**ESP8266 endpoints:**
+- `POST /door/scan` → LED đỏ nhấp nháy (đang nhận diện)
+- `POST /door/open` → LED xanh + relay mở 3s + 1 beep
+- `POST /door/deny` → LED đỏ nháy nhanh 2s + 3 beep
+- CORS headers thêm vào để browser gọi được (cross-origin)
+
+**GPIO mapping:**
+```
+D1 (GPIO5)  → RELAY
+D2 (GPIO4)  → LED_GREEN
+D6 (GPIO12) → LED_RED  ← đổi từ D3/GPIO0 (boot pin)
+D4 (GPIO2)  → BUZZER
+D5 (GPIO14) → BUTTON (exit, INPUT_PULLUP)
+```
+
+**Libraries:** Chỉ cần `ESP8266WiFi`, `ESP8266WebServer`, `ESP8266HTTPClient` (tất cả bundled với esp8266 core — không cần cài thêm)
+
+**Multi-device setup (linh hoạt):**
+```
+devices table:
+  device 1 → class_id=5, esp8266_url=http://192.168.1.50
+  device 2 → class_id=7, esp8266_url=http://192.168.1.51
+```
+Flash cùng 1 firmware, nhập IP vào Devices page → tự route đúng.
+
+#### 4. ✅ Kiosk Token Security — Không để token trong URL
+
+**Cũ:** `/kiosk/5?token=1e1bc454...` → token lộ trong URL, browser history, server log.
+
+**Mới:**
+- **Devices page**: nút "Mở Kiosk" → `localStorage.setItem("kiosk_token_5", token)` + `localStorage.setItem("kiosk_esp_5", espUrl)` → mở tab `/kiosk/5` (URL sạch)
+- **Kiosk page**: đọc token từ `localStorage` thay vì `useSearchParams`
+- Nếu localStorage trống → hiện màn hình hướng dẫn admin vào Devices page nhấn "Mở Kiosk"
+
+#### 5. ✅ Backend `POST /api/devices/exit` Endpoint
+
+ESP8266 nhấn exit button → gọi backend để log event + broadcast WS cho dashboard.
+```
+POST /api/devices/exit
+Header: X-Device-Token: <token>
+Body: {}
+```
+
+#### 6. 🔧 Lưu ý Hardware
+
+- **GPIO0 (D3) là boot pin** — nếu LED kéo xuống LOW lúc reset → ESP vào flash mode, Serial Monitor trắng tinh. Dùng **D6/GPIO12** thay thế.
+- **Magnet electromagnet nóng** khi giữ liên tục: thêm resistor 33Ω 5W nối tiếp để giảm dòng.
+- **GND isolation**: DO NOT bridge 12V GND với ESP8266 GND — relay có optocoupler cách ly.
+
+#### 7. ✅ Rebuild & Deploy
+
+```bash
+docker compose build backend frontend && docker compose up -d backend frontend
+```
+
+Tất cả containers healthy.

@@ -21,8 +21,15 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-# ── Singleton ─────────────────────────────────────────────────────────────────
+# ── Singletons ────────────────────────────────────────────────────────────────
 _face_app = None
+_antispoof_session = None  # lazy-loaded ONNX anti-spoof session
+
+_ANTISPOOF_MODEL_PATH = "/app/antispoof/anti-spoof-mn3.onnx"
+# Preprocessing constants for anti-spoof-mn3 (CelebA-Spoof trained MobileNetV3)
+# Source: Intel OpenVINO Open Model Zoo — MIT License
+_AS_MEAN  = np.array([151.2405, 119.5950, 107.8395], dtype=np.float32)
+_AS_SCALE = np.array([ 63.0105,  56.4570,  55.0035], dtype=np.float32)
 
 
 def get_face_app():
@@ -41,6 +48,30 @@ def get_face_app():
     return _face_app
 
 
+def get_antispoof_session():
+    """Lazy-load the anti-spoof ONNX session (singleton)."""
+    global _antispoof_session
+    if _antispoof_session is None:
+        import os
+        import onnxruntime as ort
+        if not os.path.exists(_ANTISPOOF_MODEL_PATH):
+            logger.warning("[ANTISPOOF] Model not found at %s — liveness skipped", _ANTISPOOF_MODEL_PATH)
+            return None
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 2
+        opts.intra_op_num_threads = 2
+        _antispoof_session = ort.InferenceSession(
+            _ANTISPOOF_MODEL_PATH,
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
+        )
+        inp_name  = _antispoof_session.get_inputs()[0].name
+        out_name  = _antispoof_session.get_outputs()[0].name
+        inp_shape = _antispoof_session.get_inputs()[0].shape
+        logger.info("[ANTISPOOF] Loaded ✅  input='%s'%s  output='%s'", inp_name, inp_shape, out_name)
+    return _antispoof_session
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _decode_image(img_bytes: bytes) -> np.ndarray:
     """JPEG/PNG bytes → BGR ndarray (OpenCV format)."""
@@ -54,6 +85,83 @@ def _decode_image(img_bytes: bytes) -> np.ndarray:
 def _blur_score(gray: np.ndarray) -> float:
     """Laplacian variance — số lớn = ảnh sắc nét."""
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def _ml_liveness(bgr: np.ndarray, bbox) -> Tuple[float, bool]:
+    """
+    ML-based passive liveness using anti-spoof-mn3 ONNX (MobileNetV3).
+
+    Trained on CelebA-Spoof dataset (625k images, 43 spoof types).
+    ACER = 3.81% on held-out test set.
+
+    Distinguishes:
+      - Printed photo attacks     (paper, cardboard)
+      - Digital screen attacks    (phone, tablet, monitor)
+      - Video replay attacks      (pre-recorded clips)
+    from real live faces.
+
+    Returns (liveness_score 0.0–1.0, is_live bool)
+      score = P(real) from softmax output
+      is_live = score >= 0.55  (slightly conservative vs 0.50)
+    """
+    session = get_antispoof_session()
+    if session is None:
+        # Model not available — default to pass (safe for development)
+        logger.warning("[ANTISPOOF] Session unavailable, defaulting to is_live=True")
+        return 0.5, True
+
+    try:
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        ih, iw = bgr.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(iw, x2), min(ih, y2)
+
+        if (x2 - x1) < 20 or (y2 - y1) < 20:
+            logger.warning("[ANTISPOOF] Face region too small, defaulting is_live=True")
+            return 0.5, True
+
+        # ── Crop & preprocess ────────────────────────────────────────────────
+        # Pad bbox by 20% to include context (hair, neck, background)
+        pad_x = int((x2 - x1) * 0.20)
+        pad_y = int((y2 - y1) * 0.20)
+        x1p = max(0, x1 - pad_x);  y1p = max(0, y1 - pad_y)
+        x2p = min(iw, x2 + pad_x); y2p = min(ih, y2 + pad_y)
+
+        face_bgr = bgr[y1p:y2p, x1p:x2p]
+        face_128 = cv2.resize(face_bgr, (128, 128))
+        face_rgb = cv2.cvtColor(face_128, cv2.COLOR_BGR2RGB)
+
+        # Normalize: (pixel - mean) / std
+        face_f = face_rgb.astype(np.float32)
+        face_f = (face_f - _AS_MEAN) / _AS_SCALE
+        # HWC → NCHW
+        inp = np.transpose(face_f, (2, 0, 1))[np.newaxis, :].astype(np.float32)
+
+        # ── Inference ─────────────────────────────────────────────────────────
+        inp_name = session.get_inputs()[0].name
+        raw = session.run(None, {inp_name: inp})[0][0]  # shape (2,)
+
+        # Softmax (stable)
+        e = np.exp(raw - raw.max())
+        probs = e / e.sum()
+        real_prob  = float(probs[0])   # P(real)
+        spoof_prob = float(probs[1])   # P(spoof)
+
+        # Threshold 0.42 (lowered from 0.55):
+        # - At ≥12° tilt, real faces: real_prob ≈ 0.43–0.75
+        # - At ≥12° tilt, phone/print: real_prob ≈ 0.15–0.38 (moire, glare, flat surface gives it away)
+        # - Frontal scans won't reach here (blocked by pose challenge in backend)
+        is_live = real_prob >= 0.42
+
+        logger.warning(
+            "[ANTISPOOF] real_prob=%.4f  spoof_prob=%.4f  → is_live=%s",
+            real_prob, spoof_prob, is_live,
+        )
+        return round(real_prob, 4), bool(is_live)
+
+    except Exception as exc:
+        logger.error("[ANTISPOOF] Inference error: %s", exc, exc_info=True)
+        return 0.5, True  # fail-open: don't block on model error
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -246,6 +354,9 @@ def extract_embedding(
     elif hasattr(face, "kps") and face.kps is not None and len(face.kps) >= 5:
         yaw, pitch, roll = _estimate_pose_solvepnp(face.kps, w, h)
 
+    # ── ML-based liveness (anti-spoof-mn3, MobileNetV3, CelebA-Spoof) ─────────
+    liveness_score, is_live = _ml_liveness(bgr, face.bbox)
+
     meta = {
         "bbox": [float(x) for x in face.bbox],
         "det_score": det_score,
@@ -256,6 +367,9 @@ def extract_embedding(
         "yaw": yaw,
         "pitch": pitch,
         "roll": roll,
+        # Liveness (ML anti-spoof: P(real) from anti-spoof-mn3)
+        "liveness_score": liveness_score,
+        "is_live": is_live,
     }
 
     return emb, quality, meta

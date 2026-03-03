@@ -15,7 +15,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy into /app/edge/ so that "from edge.src.x import y" works with PYTHONPATH=/app
+COPY . /app/edge/
 
 ENV PYTHONPATH=/app
 

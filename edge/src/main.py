@@ -5,7 +5,6 @@ Edge main entry point.
 - Runs the attendance recognition loop
 - Posts confirmed attendance to Cloud (or queues offline)
 """
-import cv2
 import time
 import logging
 import signal
@@ -15,17 +14,16 @@ import base64
 from datetime import datetime, timezone
 
 from edge.src.config import config
+from edge.src.utils.logger import setup_logging
 from edge.src.database import local_db
 from edge.src.database.local_db import enqueue_attendance, get_all_embeddings
+from edge.src.camera.stream import CameraStream
 from edge.src.ai.pipeline import AttendancePipeline, LivenessSession
 from edge.src.ai.face_embedding import FaceEmbedder
 from edge.src.sync.queue_sync import SyncDaemon
 from edge.src.core.encryption import decrypt_embedding
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+setup_logging()
 logger = logging.getLogger("edge.main")
 
 COOLDOWN_SEC = 10   # Don't re-recognize same student within N seconds
@@ -84,7 +82,7 @@ def main():
     # Init local DB
     local_db.init_db()
 
-    # Start sync daemon (background)
+    # Start sync daemon (with exponential backoff)
     daemon = SyncDaemon()
     daemon.start()
 
@@ -95,16 +93,13 @@ def main():
     pipeline = AttendancePipeline()
     _load_embeddings_to_pipeline(pipeline)
 
-    # Open camera
-    src = config.CAMERA_SOURCE
-    cap = cv2.VideoCapture(int(src) if src.isdigit() else src)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
-    cap.set(cv2.CAP_PROP_FPS, config.CAPTURE_FPS)
-
-    if not cap.isOpened():
-        logger.error(f"Cannot open camera: {config.CAMERA_SOURCE}")
-        sys.exit(1)
+    # Open camera using threaded stream
+    cam = CameraStream(
+        source=config.CAMERA_SOURCE,
+        width=config.FRAME_WIDTH,
+        height=config.FRAME_HEIGHT,
+        fps=config.CAPTURE_FPS,
+    ).start()
 
     logger.info("Camera opened. Recognition loop running...")
 
@@ -112,10 +107,10 @@ def main():
     def _shutdown(sig, frame):
         logger.info("Shutting down...")
         daemon.stop()
-        cap.release()
+        cam.stop()
         sys.exit(0)
 
-    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
     # Per-face liveness sessions
@@ -123,10 +118,9 @@ def main():
 
     frame_idx = 0
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            logger.warning("Frame read failed, retrying...")
-            time.sleep(0.1)
+        frame = cam.read()
+        if frame is None:
+            time.sleep(0.05)
             continue
 
         frame_idx += 1
