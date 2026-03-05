@@ -29,6 +29,7 @@ from app.models.student    import Student         # noqa: F401
 from app.models.class_     import Class           # noqa: F401
 from app.models.device     import Device          # noqa: F401
 from app.models.attendance import Attendance      # noqa: F401
+from app.models.enrollment import StudentEnrollment  # noqa: F401
 # fmt: on
 
 # ── Alembic Config object (provides access to alembic.ini values) ─────────────

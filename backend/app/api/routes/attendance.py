@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
+from uuid import UUID
 from datetime import datetime
 
 
@@ -86,6 +87,15 @@ async def verify_face(
         elif status in ("unknown", "no_face", "liveness_failed", "error"):
             asyncio.create_task(_notify_esp(esp, "/door/deny"))
 
+    # ── Enrich result with class info for WS broadcast ────────────────────────
+    from sqlalchemy import select as sa_select
+    from app.models.class_ import Class
+    _cls_res = await db.execute(sa_select(Class).where(Class.id == data.class_id))
+    _cls = _cls_res.scalar_one_or_none()
+    result["class_id"]   = data.class_id
+    result["class_name"] = _cls.class_name if _cls else f"Class #{data.class_id}"
+    result["class_code"] = _cls.class_code if _cls else ""
+
     # ── Broadcast WS for dashboard realtime feed ──────────────────────────────
     await broadcast_attendance(data.class_id, result)
 
@@ -104,6 +114,8 @@ async def get_today(
             student_id=r.student_id,
             student_name=r.student.full_name if r.student else None,
             class_id=r.class_id,
+            class_name=r.class_.class_name if r.class_ else None,
+            class_code=r.class_.class_code if r.class_ else None,
             timestamp=r.timestamp,
             confidence=r.confidence,
             liveness_score=r.liveness_score,
@@ -116,7 +128,7 @@ async def get_today(
 
 @router.get("/class/{class_id}", response_model=List[AttendanceResponse])
 async def get_attendance(
-    class_id: int,
+    class_id: UUID,
     date: Optional[datetime] = Query(None),
     db: AsyncSession = Depends(get_db),
     _: Admin = Depends(get_current_admin)
@@ -140,7 +152,7 @@ async def get_attendance(
 
 @router.get("/class/{class_id}/absent")
 async def get_absent(
-    class_id: int,
+    class_id: UUID,
     date: Optional[datetime] = Query(None),
     db: AsyncSession = Depends(get_db),
     _: Admin = Depends(get_current_admin),
@@ -160,7 +172,7 @@ async def get_absent(
 
 @router.get("/export")
 async def export_attendance_excel(
-    class_id: int = Query(...),
+    class_id: UUID = Query(...),
     date: Optional[datetime] = Query(None),
     db: AsyncSession = Depends(get_db),
     _: Admin = Depends(get_current_admin),

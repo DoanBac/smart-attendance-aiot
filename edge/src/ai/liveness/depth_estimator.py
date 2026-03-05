@@ -17,14 +17,15 @@ class DepthLivenessChecker:
     def __init__(self, model_path: str = None):
         model_path = model_path or config.DEPTH_MODEL
         import os
-        if not model_path or not os.path.exists(model_path):
-            logger.warning(f"Depth model not found at '{model_path}' — depth liveness check DISABLED.")
+        if not model_path or not os.path.exists(model_path) or os.path.getsize(model_path) == 0:
+            logger.warning(f"Depth model not found or empty at '{model_path}' — depth liveness check DISABLED.")
             self.session = None
             return
 
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 2  # Lightweight — keep threads low
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        opts.log_severity_level = 3  # Suppress benign shape-mismatch warnings
 
         self.session = ort.InferenceSession(
             model_path, sess_options=opts, providers=["CPUExecutionProvider"]

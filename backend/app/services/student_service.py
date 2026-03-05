@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func
 from typing import List, Optional
+from uuid import UUID
 
 from app.models.student import Student
 from app.models.attendance import Attendance
@@ -32,12 +33,12 @@ async def generate_student_code(db: AsyncSession) -> str:
             max_num = max(max_num, int(suffix))
 
     next_num = max_num + 1
-    # Zero-pad to 3 digits minimum (FSB001 … FSB999, then FSB1000 naturally)
-    width = max(3, len(str(next_num)))
+    # Zero-pad to 6 digits minimum: FSB000001 … FSB999999, then grows naturally
+    width = max(6, len(str(next_num)))
     return f"{STUDENT_CODE_PREFIX}{str(next_num).zfill(width)}"
 
 
-async def get_all_students(db: AsyncSession, class_id: int = None) -> List[Student]:
+async def get_all_students(db: AsyncSession, class_id: UUID = None) -> List[Student]:
     stmt = select(Student)
     if class_id:
         stmt = stmt.where(Student.class_id == class_id)
@@ -45,7 +46,7 @@ async def get_all_students(db: AsyncSession, class_id: int = None) -> List[Stude
     return result.scalars().all()
 
 
-async def soft_delete_student(db: AsyncSession, student_id: int):
+async def soft_delete_student(db: AsyncSession, student_id: UUID):
     """
     Soft-delete: set status='inactive', erase face biometric (GDPR compliance).
     Attendance history is KEPT for reporting/audit purposes.
@@ -62,7 +63,7 @@ async def soft_delete_student(db: AsyncSession, student_id: int):
     await db.flush()
 
 
-async def delete_student_data(db: AsyncSession, student_id: int):
+async def delete_student_data(db: AsyncSession, student_id: UUID):
     """
     Hard-delete (GDPR Right to Erasure): removes all records permanently.
     Use with caution — attendance history will also be removed.

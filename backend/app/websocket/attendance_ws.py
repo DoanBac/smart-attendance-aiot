@@ -25,28 +25,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 REDIS_CHANNEL_PREFIX = "ws:attendance:"
-GLOBAL_CLASS_ID = 0   # virtual id used for the "all classes" dashboard channel
+GLOBAL_CLASS_ID = "0"   # virtual id used for the "all classes" dashboard channel
 
 
 class ConnectionManager:
     def __init__(self):
         # class_id → list of websocket connections (local to this worker)
-        self.active: Dict[int, List[WebSocket]] = {}
+        self.active: Dict[str, List[WebSocket]] = {}
 
-    async def connect(self, ws: WebSocket, class_id: int):
+    async def connect(self, ws: WebSocket, class_id):
         await ws.accept()
+        class_id = str(class_id)
         self.active.setdefault(class_id, []).append(ws)
         logger.info(f"WS connected for class {class_id}  (total: {len(self.active[class_id])})")
 
-    def disconnect(self, ws: WebSocket, class_id: int):
+    def disconnect(self, ws: WebSocket, class_id):
+        class_id = str(class_id)
         if class_id in self.active:
             try:
                 self.active[class_id].remove(ws)
             except ValueError:
                 pass
 
-    async def broadcast_local(self, class_id: int, message: dict):
+    async def broadcast_local(self, class_id, message: dict):
         """Send to all WS clients connected to THIS worker."""
+        class_id = str(class_id)
         dead = []
         for ws in self.active.get(class_id, []):
             try:
@@ -84,7 +87,7 @@ async def _redis_subscriber():
                 try:
                     # channel = "ws:attendance:5" → class_id = 5
                     channel: str = message["channel"]
-                    class_id = int(channel.split(":")[-1])
+                    class_id = channel.split(":")[-1]
                     data = json.loads(message["data"])
                     await manager.broadcast_local(class_id, data)
                 except Exception as e:
@@ -118,14 +121,25 @@ def stop_redis_subscriber():
 
 # ── REST → Redis publish ──────────────────────────────────────────────────────
 
-async def broadcast_attendance(class_id: int, record: dict):
+def _json_default(obj):
+    """Custom JSON serializer for UUID and datetime objects."""
+    import uuid
+    from datetime import datetime
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+async def broadcast_attendance(class_id: str, record: dict):
     """
     Called by attendance_service after a new record is saved.
     Publishes to Redis so ALL workers (with WS clients) receive it.
     Also publishes to the global channel (GLOBAL_CLASS_ID=0) for dashboard.
     """
     from app.core.redis_client import get_redis
-    payload = json.dumps({"event": "attendance", "data": record})
+    payload = json.dumps({"event": "attendance", "data": record}, default=_json_default)
     try:
         redis = await get_redis()
         channel = f"{REDIS_CHANNEL_PREFIX}{class_id}"
@@ -158,7 +172,7 @@ async def attendance_ws_all(websocket: WebSocket):
 
 
 @router.websocket("/attendance/{class_id}")
-async def attendance_ws(websocket: WebSocket, class_id: int):
+async def attendance_ws(websocket: WebSocket, class_id: str):
     await manager.connect(websocket, class_id)
     try:
         while True:

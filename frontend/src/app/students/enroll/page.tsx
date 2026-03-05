@@ -20,7 +20,7 @@ const MAX_ATTEMPTS_PER_STEP = 60;
 type CameraMode = "local" | "ip";
 
 interface Student {
-  id: number;
+  id: string;   // UUID from backend
   student_code: string;
   full_name: string;
   status: string;

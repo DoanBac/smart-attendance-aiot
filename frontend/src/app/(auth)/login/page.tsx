@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { getApiBase } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
@@ -9,6 +9,13 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+
+  // Nếu đã có token → về dashboard
+  useEffect(() => {
+    if (localStorage.getItem("access_token")) {
+      router.replace("/dashboard");
+    }
+  }, [router]);
 
   const base = getApiBase();
 
@@ -24,8 +31,12 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }), // ← email, không phải username
       });
 
+      if (resp.status === 401) {
+        setError("Email hoặc mật khẩu không đúng");
+        return;
+      }
       if (!resp.ok) {
-        setError("Invalid email or password");
+        setError("Lỗi server, vui lòng thử lại");
         return;
       }
 

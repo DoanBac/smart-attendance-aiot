@@ -1,5 +1,6 @@
 import base64
 import logging
+from uuid import UUID
 import numpy as np
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -10,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.models.attendance import Attendance
 from app.models.student import Student
 from app.models.class_ import Class
+from app.models.enrollment import StudentEnrollment
 from app.schemas.attendance import AttendanceCreate
 
 logger = logging.getLogger(__name__)
@@ -122,7 +124,7 @@ async def bulk_sync_attendance(
 async def verify_face_and_log(
     db: AsyncSession,
     image_b64: str,
-    class_id: int,
+    class_id: UUID,
     device_id: Optional[int] = None,
     challenge_dir: Optional[str] = None,  # "left" | "right" pose challenge
 ) -> dict:
@@ -146,7 +148,7 @@ async def verify_face_and_log(
     except RuntimeError as e:
         logger.error(f"[KIOSK] AI service error during extract: {e}")
         return {"matched": False, "status": "error",
-                "message": "AI service không khả dụng", "confidence": 0.0}
+                "message": "AI service unavailable", "confidence": 0.0}
 
     # ── Liveness gate: Pose challenge + anti-spoof score ──────────────────────────────
     liveness_score = meta.get("liveness_score")
@@ -165,12 +167,12 @@ async def verify_face_and_log(
             (challenge_dir == "left"  and yaw >= MIN_YAW  and yaw <= MAX_YAW) or
             (challenge_dir == "right" and yaw <= -MIN_YAW and yaw >= -MAX_YAW)
         )
-        dir_label = "← SANG TRÁI" if challenge_dir == "left" else "→ SANG PHẢI"
+        dir_label = "← LEFT" if challenge_dir == "left" else "→ RIGHT"
         if not direction_ok:
             if abs(yaw or 0) < MIN_YAW:
-                msg = f"Vui lòng quay mặt {dir_label} rồi chụp"
+                msg = f"Please turn your face {dir_label} then capture"
             else:
-                msg = f"Hướng sai! Vui lòng quay mặt {dir_label}"
+                msg = f"Wrong direction! Please turn your face {dir_label}"
             logger.warning("[KIOSK] Pose challenge FAILED — expected=%s yaw=%.1f", challenge_dir, yaw or 0)
             return {"matched": False, "status": "liveness_failed", "message": msg, "confidence": 0.0}
         logger.info("[KIOSK] Pose challenge PASSED — dir=%s yaw=%.1f°", challenge_dir, yaw)
@@ -185,29 +187,98 @@ async def verify_face_and_log(
         return {
             "matched": False,
             "status": "liveness_failed",
-            "message": "Hệ thống phát hiện ảnh giả. Vui lòng dùng khuôn mặt thật.",
+            "message": "Spoofing detected. Please use your real face.",
             "confidence": 0.0,
             "liveness_score": liveness_score,
         }
 
-    # ── Step 2: Identify against class gallery ────────────────────────────────
+    # ── Step 2: Identify GLOBALLY across all students with face embeddings ──────────
+    # (class_id=None → no class filter, finds student even if at wrong class kiosk)
     emb_b64 = base64.b64encode(embedding.astype(np.float32).tobytes()).decode()
-    student_id, confidence = await identify_face(db, emb_b64, class_id)
+    student_id, confidence = await identify_face(db, emb_b64, class_id=None)
 
     if not student_id:
         return {
             "matched": False, "status": "unknown",
-            "message": "Không nhận ra khuôn mặt. Vui lòng thử lại.",
+            "message": "Face not recognized. Please try again.",
             "confidence": round(confidence, 4),
         }
 
-    # ── Step 3: Fetch student info ────────────────────────────────────────────
+    # ── Step 3: Fetch student info ────────────────────────────────────────────────
     res = await db.execute(select(Student).where(Student.id == student_id))
     student = res.scalar_one_or_none()
-    student_name = student.full_name if student else f"Student #{student_id}"
-    student_code = student.student_code if student else None
+    student_name  = student.full_name    if student else f"Student #{student_id}"
+    student_code  = student.student_code if student else None
+    student_email = student.email        if student else None
 
-    # ── Step 4: Duplicate check — already marked in last 2 hours ─────────────
+    # ── Step 4: Check enrollment in THIS class via student_enrollments ──────────────
+    enroll_res = await db.execute(
+        select(StudentEnrollment).where(
+            StudentEnrollment.student_id == student_id,
+            StudentEnrollment.class_id   == class_id,
+            StudentEnrollment.status     == "active",
+        )
+    )
+    not_enrolled = enroll_res.scalar_one_or_none() is None
+
+    if not_enrolled:
+        # Student is in the system but scanned at the wrong kiosk
+        # Load wrong class info
+        wrong_cls_res = await db.execute(select(Class).where(Class.id == class_id))
+        wrong_cls = wrong_cls_res.scalar_one_or_none()
+        wrong_class_name = wrong_cls.class_name if wrong_cls else f"Class #{class_id}"
+        wrong_class_code = wrong_cls.class_code if wrong_cls else ""
+
+        # Load all enrolled classes for schedule email (today + tomorrow)
+        enrolled_res = await db.execute(
+            select(Class)
+            .join(StudentEnrollment, StudentEnrollment.class_id == Class.id)
+            .where(
+                StudentEnrollment.student_id == student_id,
+                StudentEnrollment.status     == "active",
+            )
+            .order_by(Class.class_name)
+        )
+        enrolled_classes = enrolled_res.scalars().all()
+
+        # Serialize to plain dicts NOW (before DB session closes)
+        enrolled_dicts = [
+            {
+                "class_name": c.class_name,
+                "class_code": c.class_code,
+                "room":       c.room,
+                "schedule":   dict(c.schedule) if c.schedule else {},
+            }
+            for c in enrolled_classes
+        ]
+
+        # Fire-and-forget email async (does not block kiosk response)
+        import asyncio
+        from app.services.email_service import send_wrong_class_email
+        asyncio.ensure_future(send_wrong_class_email(
+            student_name     = student_name,
+            student_code     = student_code or "",
+            student_email    = student_email,
+            wrong_class_name = wrong_class_name,
+            wrong_class_code = wrong_class_code,
+            enrolled_classes = enrolled_dicts,
+        ))
+
+        logger.warning(
+            "[KIOSK] Wrong class: student=%s (id=%d) scanned class=%d — not enrolled",
+            student_name, student_id, class_id,
+        )
+        return {
+            "matched": True,
+            "status": "wrong_class",
+            "student_id": student_id,
+            "student_name": student_name,
+            "student_code": student_code,
+            "confidence": round(confidence, 4),
+            "message": f"You are not enrolled in this class. Schedule reminder sent to your email.",
+        }
+
+    # ── Step 5: Duplicate check — already marked in last 2 hours ─────────────────
     window_start = datetime.utcnow() - timedelta(hours=2)
     dup = await db.execute(
         select(Attendance).where(
@@ -223,10 +294,10 @@ async def verify_face_and_log(
             "student_name": student_name,
             "student_code": student_code,
             "confidence": round(confidence, 4),
-            "message": f"Đã điểm danh rồi — {student_name}",
+            "message": f"Already checked in — {student_name}",
         }
 
-    # ── Step 5: Create attendance record + WS broadcast ──────────────────────
+    # ── Step 6: Create attendance record + WS broadcast ────────────────────────
     data = AttendanceCreate(
         student_id=student_id,
         class_id=class_id,
@@ -258,13 +329,13 @@ async def verify_face_and_log(
         "student_code": student_code,
         "confidence": round(confidence, 4),
         "attendance_id": record.id,
-        "message": f"Chào mừng {student_name}! Điểm danh thành công.",
+        "message": f"Welcome, {student_name}! Attendance recorded.",
     }
 
 
 async def get_class_attendance(
     db: AsyncSession,
-    class_id: int,
+    class_id: UUID,
     date: Optional[datetime] = None
 ) -> List[Attendance]:
     stmt = (
@@ -284,7 +355,7 @@ async def get_today_attendance(db: AsyncSession) -> List[Attendance]:
     today = date_type.today()
     stmt = (
         select(Attendance)
-        .options(selectinload(Attendance.student))
+        .options(selectinload(Attendance.student), selectinload(Attendance.class_))
         .where(func.date(Attendance.timestamp) == today)
         .order_by(Attendance.timestamp.desc())
     )
@@ -294,7 +365,7 @@ async def get_today_attendance(db: AsyncSession) -> List[Attendance]:
 
 async def get_absent_students(
     db: AsyncSession,
-    class_id: int,
+    class_id: UUID,
     date: Optional[datetime] = None,
 ) -> List[Student]:
     """Return active students in class who have NO attendance record on the given date."""

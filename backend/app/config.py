@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     AI_SERVICE_URL: str = "http://ai-service:9000"   # internal Docker network
     AI_SERVICE_SECRET_KEY: str = "ai-service-internal-secret-change-in-prod"
 
+    # Email (SMTP) — for schedule reminder emails to wrong-class students
+    SMTP_ENABLED: bool = False
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = "noreply@school.edu.vn"
+    SMTP_FROM_NAME: str = "Smart Attendance System"
+
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 100
     

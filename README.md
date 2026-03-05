@@ -1,455 +1,374 @@
 # 🎓 AIoT Smart Attendance System
 
-> Hệ thống điểm danh thông minh sử dụng nhận diện khuôn mặt AIoT — FastAPI + Next.js + InsightFace + Edge Computing
+> Hệ thống điểm danh thông minh — FastAPI · Next.js 14 · InsightFace · Raspberry Pi Edge
 
 ---
 
 ## 📑 Mục lục
 
-1. [Tổng quan hệ thống](#1-tổng-quan-hệ-thống)
-2. [Kiến trúc](#2-kiến-trúc)
-3. [Yêu cầu hệ thống](#3-yêu-cầu-hệ-thống)
-4. [Cài đặt & Chạy](#4-cài-đặt--chạy)
-5. [Cấu trúc thư mục](#5-cấu-trúc-thư-mục)
-6. [API Reference](#6-api-reference)
-7. [Dữ liệu mặc định & Tài khoản test](#7-dữ-liệu-mặc-định--tài-khoản-test)
-8. [Pipeline AI nhận diện khuôn mặt](#8-pipeline-ai-nhận-diện-khuôn-mặt)
-9. [Edge Device](#9-edge-device)
-10. [Bảo mật](#10-bảo-mật)
-11. [Các lỗi đã gặp & cách xử lý](#11-các-lỗi-đã-gặp--cách-xử-lý)
-12. [Lưu ý quan trọng](#12-lưu-ý-quan-trọng)
-13. [Hướng phát triển tiếp theo](#13-hướng-phát-triển-tiếp-theo)
+1. [Tổng quan](#1-tổng-quan)
+2. [Kiến trúc hệ thống](#2-kiến-trúc-hệ-thống)
+3. [Yêu cầu](#3-yêu-cầu)
+4. [Cài đặt & Chạy — macOS / Linux](#4-cài-đặt--chạy--macos--linux)
+5. [Cài đặt & Chạy — Raspberry Pi Edge](#5-cài-đặt--chạy--raspberry-pi-edge)
+6. [Cấu trúc thư mục](#6-cấu-trúc-thư-mục)
+7. [API Reference](#7-api-reference)
+8. [Tài khoản mặc định](#8-tài-khoản-mặc-định)
+9. [Pipeline AI](#9-pipeline-ai)
+10. [Edge Device — Chi tiết](#10-edge-device--chi-tiết)
+11. [Bảo mật](#11-bảo-mật)
+12. [Bugs đã gặp & cách xử lý](#12-bugs-đã-gặp--cách-xử-lý)
+13. [Trạng thái & Roadmap](#13-trạng-thái--roadmap)
 
 ---
 
-## 1. Tổng quan hệ thống
+## 1. Tổng quan
 
-**AIoT Smart Attendance System** là hệ thống điểm danh tự động sử dụng nhận diện khuôn mặt (Face Recognition) kết hợp giữa:
-
-- **Cloud Backend** (FastAPI + PostgreSQL + Redis): Quản lý dữ liệu, API, lưu trữ embedding mã hóa
-- **Web Frontend** (Next.js 14): Giao diện quản trị cho admin — quản lý sinh viên, lớp học, xem lịch sử điểm danh
-- **Edge Device**: Thiết bị IoT gắn tại phòng học — chạy AI inference local, tự điểm danh offline khi mất mạng
-
-### Tính năng chính
+**AIoT Smart Attendance System** là hệ thống điểm danh tự động dùng nhận diện khuôn mặt (Face Recognition) kết hợp Edge Computing:
 
 | Tính năng | Mô tả |
 |---|---|
-| Đăng ký khuôn mặt | Admin chụp ≥5 frames qua webcam browser, tự động tổng hợp embedding |
-| Nhận diện real-time | Edge device nhận diện khuôn mặt với ArcFace (512-dim cosine similarity) |
-| Liveness detection | 3-layer: EAR blink + Head pose PnP + Depth estimation — chống ảnh tĩnh/video replay |
-| Offline resilience | Edge lưu queue SQLite khi mất mạng, tự sync khi có kết nối |
-| Mã hóa embedding | AES-256-GCM — embedding không bao giờ lưu dạng plaintext |
-| WebSocket real-time | Dashboard cập nhật điểm danh real-time qua WS |
-| JWT Authentication | Access token 15 phút + Refresh token 7 ngày |
+| Đăng ký khuôn mặt (cloud) | Admin chụp 6 góc nhìn × 5 frames qua webcam, InsightFace trích xuất embedding |
+| Đăng ký khuôn mặt (offline) | Tại thiết bị Pi — 6 góc × 5 frames, cùng model và flow với cloud |
+| Nhận diện real-time | Edge device nhận diện với cosine similarity trên embedding 512-dim |
+| Liveness detection | Depth estimation (64×64) + Head pose — chống ảnh tĩnh/video replay |
+| Offline resilience | SQLite queue trên edge, tự bulk-sync khi có mạng |
+| Mã hóa embedding | AES-256-GCM — embedding không bao giờ lưu plaintext |
+| WebSocket | Dashboard cập nhật điểm danh real-time qua WS |
+| ESP8266 Door Lock | Relay mở khóa cửa sau khi nhận diện thành công |
 
 ---
 
-## 2. Kiến trúc
+## 2. Kiến trúc hệ thống
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         CLOUD (Docker)                           │
-│                                                                   │
-│   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐    │
-│   │  Next.js 14  │────▶│  FastAPI     │────▶│  PostgreSQL  │    │
-│   │  :3000       │     │  :8000       │     │  :5432       │    │
-│   └──────────────┘     └──────┬───────┘     └──────────────┘    │
-│                               │                                   │
-│                               │             ┌──────────────┐    │
-│                               └────────────▶│    Redis     │    │
-│                                             │  :6379       │    │
-│                                             └──────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
-              ▲  REST API + Device Token
-              │
-┌─────────────┴───────────────────────────────────────────────────┐
-│                    EDGE DEVICE (Raspberry Pi / PC)               │
-│                                                                   │
-│   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐    │
-│   │   Camera     │────▶│  AI Pipeline │────▶│  SQLite DB   │    │
-│   │  (USB/RTSP)  │     │  YOLOv8 +   │     │  (offline)   │    │
-│   └──────────────┘     │  ArcFace R100│     └──────────────┘    │
-│                         │  + Liveness  │                          │
-│                         └──────────────┘                          │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    CLOUD (Docker Compose)                │
+│                                                          │
+│  Next.js :3000 ──▶ FastAPI :8000 ──▶ PostgreSQL :5432  │
+│                         │              Redis :6379        │
+│                         ▼                                │
+│                  AI Service :8001                        │
+│              (InsightFace buffalo_sc)                    │
+│       Detection: SCRFD · Recognition: w600k_mbf.onnx    │
+└────────────────────────┬────────────────────────────────┘
+                         │  REST + Device Token (LAN/Internet)
+┌────────────────────────▼────────────────────────────────┐
+│              EDGE DEVICE (Raspberry Pi 4)               │
+│                                                          │
+│  Camera USB ──▶ AI Pipeline ──▶ SQLite  ──▶  Sync      │
+│  (EMEET C950)   SCRFD detect      local.db    daemon    │
+│                 w600k_mbf embed                          │
+│                 Liveness check                           │
+│                      │                                   │
+│              Flask Web :5000                             │
+│    / (kiosk) · /enroll (đăng ký offline)                │
+└─────────────────────────────────────────────────────────┘
+                         │  HTTP (LAN)
+          ESP8266 Door Controller (:80)
+          (relay mở cửa sau recognition)
 ```
 
 ### Stack công nghệ
 
-| Layer | Công nghệ | Phiên bản |
+| Layer | Công nghệ | Version |
 |---|---|---|
-| Backend API | FastAPI | 0.115.0 |
+| Backend API | FastAPI + Uvicorn | 0.115.0 |
 | ORM | SQLAlchemy (async) | 2.0.36 |
 | Database | PostgreSQL | 16-alpine |
-| Cache | Redis | 7-alpine |
-| Face Recognition | InsightFace (buffalo_sc) | 0.7.3 |
-| ONNX Runtime | onnxruntime | 1.19.2 |
-| Frontend | Next.js | 14 |
+| Cache / PubSub | Redis | 7-alpine |
+| Face AI (cloud) | InsightFace buffalo_sc | 0.7.3 |
+| Face AI (edge) | ONNX Runtime | 1.19.2 |
+| Frontend | Next.js 14 App Router | 14.x |
 | Styling | Tailwind CSS | 3.x |
-| Containerization | Docker Compose | v2 |
-| DB Driver | asyncpg | 0.30.0 |
-| Validation | Pydantic v2 | 2.9.2 |
+| Edge language | Python 3.11 |  |
+| Edge web server | Flask | 3.1.0 |
+| Containerization | Docker Compose v2 |  |
 
 ---
 
-## 3. Yêu cầu hệ thống
+## 3. Yêu cầu
 
-### Tối thiểu
+### Cloud (macOS / Linux / Windows)
 
-- **Docker Desktop** ≥ 4.x (với Docker Compose v2)
-- **RAM**: 4 GB (8 GB khuyến nghị — InsightFace model ~1GB)
-- **Disk**: 5 GB trống
-- **OS**: Windows 10/11, Ubuntu 20.04+, macOS 12+
+- **Docker Desktop** ≥ 4.x (Docker Compose v2 built-in)
+- RAM: 4 GB tối thiểu · 8 GB khuyến nghị (InsightFace ~1 GB)
+- Disk: 8 GB trống
+- OS: macOS 12+, Ubuntu 20.04+, Windows 10/11
 
-### Edge Device (nếu triển khai riêng)
+### Edge (Raspberry Pi)
 
-- Raspberry Pi 4 (4GB RAM) hoặc Jetson Nano
-- Camera USB hoặc Camera Module
-- Python 3.10+
-- OpenCV, onnxruntime
-
----
-
-## 4. Cài đặt & Chạy
-
-> **Yêu cầu duy nhất:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) — không cần cài Python, Node.js, hay bất kỳ thứ gì khác.
+- Raspberry Pi 4 (4 GB RAM)
+- Camera USB (đã test: EMEET C950)
+- MicroSD ≥ 32 GB (class 10)
+- OS: Raspberry Pi OS Lite 64-bit (Bookworm) hoặc Ubuntu 22.04 arm64
+- Docker 24+ và Docker Compose v2
+- Cùng LAN với máy Cloud hoặc có Cloudflare Tunnel
 
 ---
 
-### 🍎 Hướng dẫn đầy đủ cho macOS (Apple Silicon & Intel)
+## 4. Cài đặt & Chạy — macOS / Linux
 
-#### Bước 1 — Cài Docker Desktop
-
-```bash
-# Cách 1: Tải trực tiếp (khuyên dùng)
-# → https://www.docker.com/products/docker-desktop/
-# Chọn bản "Mac with Apple Chip" (M1/M2/M3) hoặc "Mac with Intel Chip"
-
-# Cách 2: Dùng Homebrew
-brew install --cask docker
-```
-
-Sau khi cài, mở **Docker Desktop** và đợi icon Docker trên menu bar chuyển sang màu trắng (running).
-
-#### Bước 2 — Clone repo
+### Bước 1 — Clone & cấu hình
 
 ```bash
 git clone https://github.com/DoanBac/smart-attendance-aiot.git
 cd smart-attendance-aiot
-```
-
-#### Bước 3 — Tạo file `.env`
-
-```bash
 cp backend/.env.example backend/.env
 ```
 
-> File `.env` đã có sẵn giá trị hợp lệ để chạy local. **Không cần sửa gì** cho môi trường dev.
-
-#### Bước 4 — Build và chạy toàn bộ hệ thống
+### Bước 2 — Build và chạy toàn bộ
 
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
-Lần đầu sẽ mất **5–10 phút** (download images, build, cài packages AI). Các lần sau chỉ ~30 giây.
+Lần đầu mất **5–15 phút** (download images + InsightFace models).
 
-#### Bước 5 — Seed dữ liệu mặc định (lần đầu chạy)
+> **Apple Silicon (M1/M2/M3):** Nếu gặp `exec format error`, thêm `platform: linux/amd64` vào service trong `docker-compose.yml`.
+
+### Bước 3 — Seed admin (lần đầu)
 
 ```bash
-# Reset password admin về admin123
 docker exec smart-attendance-aiot-backend-1 python reset_admin_password.py
 ```
 
-#### Bước 6 — Kiểm tra
+### Bước 4 — Truy cập
 
-```bash
-docker-compose ps
-```
-
-Tất cả services phải ở trạng thái `Up` hoặc `healthy`:
-
-| Service | Port | URL |
-|---|---|---|
-| Frontend (Next.js) | 3000 | http://localhost:3000 |
-| Backend (FastAPI) | 8000 | http://localhost:8000 |
-| API Docs (Swagger) | 8000 | http://localhost:8000/docs |
-| PostgreSQL | 5432 | — (internal) |
-| Redis | 6379 | — (internal) |
-
-#### Bước 7 — Đăng nhập
-
-Mở http://localhost:3000
-
-| Field | Giá trị |
+| Service | URL |
 |---|---|
-| Email | `admin@school.edu.vn` |
-| Password | `admin123` |
+| Frontend (Admin UI) | http://localhost:3000 |
+| Backend API | http://localhost:8000 |
+| Swagger UI | http://localhost:8000/docs |
 
----
+Đăng nhập: `admin@school.edu.vn` / `admin123`
 
-### 🪟 Hướng dẫn cho Windows
-
-Tương tự macOS — cài [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/), sau đó làm từ Bước 2 trở đi trong **PowerShell** hoặc **Git Bash**.
-
----
-
-### 🔄 Các lệnh thường dùng
+### Lệnh thường dùng
 
 ```bash
-# Xem logs real-time
-docker-compose logs -f backend
-docker-compose logs -f frontend
-
-# Dừng tất cả
-docker-compose down
-
-# Rebuild sau khi sửa code backend
-docker-compose up -d --build backend
-
-# Rebuild sau khi sửa code frontend
-docker-compose up -d --build frontend
-
-# Reset hoàn toàn (xóa cả database)
-docker-compose down -v
-docker-compose up -d --build
-
-# Vào psql xem database
+docker compose logs -f backend
+docker compose up -d --build backend
+docker compose down
+docker compose down -v  # reset hoàn toàn (XÓA database)
 docker exec -it smart-attendance-aiot-postgres-1 psql -U doanbac07 -d attendance_db
-
-# Xem enrollment sessions trong Redis
-docker exec -it smart-attendance-aiot-redis-1 redis-cli KEYS "enrollment:*"
+docker exec -it smart-attendance-aiot-redis-1 redis-cli KEYS "*"
+docker exec -it smart-attendance-aiot-backend-1 bash
 ```
 
 ---
 
-### ⚠️ Lưu ý Apple Silicon (M1/M2/M3)
+## 5. Cài đặt & Chạy — Raspberry Pi Edge
 
-Project dùng `onnxruntime` và `insightface` — **đã tương thích** với ARM64 thông qua Docker `linux/amd64` emulation. Nếu gặp lỗi `exec format error`:
+### 5.1 Chuẩn bị Pi (một lần)
 
 ```bash
-# Thêm platform vào docker-compose.yml (nếu cần)
-# services:
-#   backend:
-#     platform: linux/amd64   ← thêm dòng này
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker pi
+newgrp docker
+mkdir -p ~/attendance-edge/{src,data,models,config}
+```
 
-docker-compose up -d --build
+### 5.2 Copy source code lên Pi
+
+Từ **Mac** (thay `192.168.x.x` bằng IP Pi):
+
+```bash
+scp -r edge/src pi@192.168.x.x:~/attendance-edge/src
+scp edge/docker-compose.yml edge/Dockerfile edge/requirements.txt \
+    pi@192.168.x.x:~/attendance-edge/
+```
+
+> **Hotfix nhanh** (không cần rebuild):
+> ```bash
+> scp edge/src/web/stream.py pi@IP:~/attendance-edge/src/web/stream.py
+> ssh pi@IP 'cd ~/attendance-edge && docker compose restart'
+> ```
+
+### 5.3 Tạo cấu hình thiết bị
+
+SSH vào Pi, tạo `~/attendance-edge/config/device.env`:
+
+```env
+DEVICE_TOKEN=1cca41cee8e041ca8f91dd79b3530490
+CLASS_ID=6803980d-be34-43be-be76-8e49cb19a2a6
+CLOUD_API_URL=http://192.168.123.xxx:8000
+CAMERA_SOURCE=/dev/video0
+FRAME_WIDTH=640
+FRAME_HEIGHT=480
+CAPTURE_FPS=20
+PROCESS_EVERY_N_FRAMES=5
+DETECTION_MODEL=/app/models/yolov8_face_320.onnx
+EMBEDDING_MODEL=/app/models/w600k_mbf.onnx
+AES_KEY=5fc0fa62e37680651a6a782d13856c6b3f4e36c5472dbd5705c52b5a968ccb1b
+COSINE_THRESHOLD=0.45
+LOCAL_DB_PATH=/app/data/local.db
+ORT_NUM_THREADS=4
+SYNC_INTERVAL_SEC=30
+```
+
+### 5.4 Download models nhận diện
+
+```bash
+cd ~/attendance-edge/models
+
+# Model nhận diện (InsightFace buffalo_sc, ~13 MB)
+# PHẢI cùng model với cloud để embedding tương thích!
+# buffalo_sc.zip (~15MB, bao gồm det_500m.onnx + w600k_mbf.onnx)
+wget -O /tmp/buffalo_sc.zip \
+  "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip"
+unzip /tmp/buffalo_sc.zip -d /tmp/buffalo_sc_extracted
+cp /tmp/buffalo_sc_extracted/w600k_mbf.onnx ~/attendance-edge/models/w600k_mbf.onnx
+
+ls -lh *.onnx
+# yolov8_face_320.onnx  ~17 MB  (SCRFD detector)
+# w600k_mbf.onnx        ~13 MB (ArcFace recognizer)
+```
+
+### 5.5 Build và chạy
+
+```bash
+cd ~/attendance-edge
+docker compose build    # lần đầu ~10–20 phút trên Pi 4
+docker compose up -d
+docker compose logs -f
+```
+
+### 5.6 Giao diện web trên Pi
+
+| URL | Mô tả |
+|---|---|
+| `http://PI-IP:5000/` | Kiosk điểm danh real-time |
+| `http://PI-IP:5000/enroll` | Đăng ký khuôn mặt offline (6-pose) |
+| `http://PI-IP:5000/status` | JSON status API |
+| `http://PI-IP:5000/snapshot` | Snapshot JPEG hiện tại |
+
+### 5.7 Quy trình đăng ký khuôn mặt offline (`/enroll`)
+
+1. Mở `http://PI-IP:5000/enroll`
+2. Nhập **Mã sinh viên** → hệ thống tự tra cứu tên từ DB local
+3. Click **Bắt đầu đăng ký khuôn mặt**
+4. Thực hiện 6 tư thế (front, left, right, up, down, confirm) — 5 frames mỗi tư thế
+5. Embedding được trích xuất bằng `w600k_mbf.onnx`, tổng hợp weighted average, mã hóa AES-256-GCM, lưu `is_local=1`
+6. Cloud sync **không ghi đè** embedding có `is_local=1`
+
+### 5.8 Update code lên Pi (workflow thường ngày)
+
+```bash
+KEY=~/.ssh/pi_edge_key
+PI=192.168.xxx.xxx
+scp -i $KEY edge/src/web/stream.py pi@$PI:~/attendance-edge/src/web/stream.py
+ssh -i $KEY pi@$PI 'cd ~/attendance-edge && docker compose restart'
 ```
 
 ---
 
-### 🔑 Tài khoản & Token mặc định
-
-| Loại | Giá trị |
-|---|---|
-| Admin email | `admin@school.edu.vn` |
-| Admin password | `admin123` |
-| Device token (test) | `b7da9fc490c04c20bcd0d4c8165a1ae4` |
-| Device class | Class ID = 2 |
-
----
-
-## 5. Cấu trúc thư mục
+## 6. Cấu trúc thư mục
 
 ```
 smart-attendance-aiot/
-├── docker-compose.yml          # Orchestration: postgres, redis, backend, frontend
+├── docker-compose.yml
 ├── README.md
-│
-├── backend/                    # FastAPI application
-│   ├── Dockerfile
-│   ├── requirements.txt
+├── Paper_v2.md
+├── backend/
+│   ├── reset_admin_password.py     # Util: reset admin → admin123
+│   ├── start.sh
 │   └── app/
-│       ├── main.py             # Entry point, router mounting, CORS, lifespan
-│       ├── config.py           # Pydantic Settings (env vars)
-│       ├── api/
-│       │   ├── dependencies.py
-│       │   ├── middleware/
-│       │   │   ├── auth_middleware.py
-│       │   │   └── rate_limiter.py
-│       │   └── routes/
-│       │       ├── auth.py          # POST /api/auth/login|register|refresh
-│       │       ├── students.py      # CRUD /api/students/
-│       │       ├── classes.py       # CRUD /api/classes/
-│       │       ├── attendance.py    # POST /api/attendance/, bulk-sync, GET by class
-│       │       ├── devices.py       # /api/devices/register|heartbeat|embeddings
-│       │       └── enrollment.py    # /api/enrollment/capture-frame|finalize|upload-embedding|identify
+│       ├── api/routes/
+│       │   ├── auth.py             # /api/auth/login|register|refresh
+│       │   ├── students.py         # CRUD /api/students/
+│       │   ├── classes.py          # CRUD /api/classes/
+│       │   ├── attendance.py       # /api/attendance/ + bulk-sync
+│       │   ├── devices.py          # register · heartbeat · embeddings
+│       │   └── enrollment.py       # capture-frame · finalize · identify
 │       ├── core/
-│       │   ├── encryption.py   # AES-256-GCM encrypt/decrypt
-│       │   ├── jwt_handler.py  # JWT encode/decode
-│       │   └── security.py     # get_current_admin, verify_device_token
-│       ├── database/
-│       │   └── session.py      # AsyncEngine, SessionLocal, Base, get_db
-│       ├── models/             # SQLAlchemy ORM models
-│       │   ├── admin.py        # Table: admins
-│       │   ├── student.py      # Table: students (face_embedding: LargeBinary)
-│       │   ├── class_.py       # Table: classes
-│       │   ├── device.py       # Table: devices
-│       │   └── attendance.py   # Table: attendance
-│       ├── schemas/            # Pydantic v2 request/response schemas
-│       ├── services/           # Business logic
-│       │   ├── auth_service.py
-│       │   ├── student_service.py
-│       │   ├── attendance_service.py
-│       │   ├── device_service.py
-│       │   └── face_service.py  # InsightFace + AES + liveness
+│       │   ├── encryption.py       # AES-256-GCM
+│       │   ├── jwt_handler.py
+│       │   └── security.py
+│       ├── models/                 # SQLAlchemy ORM
+│       ├── schemas/                # Pydantic v2
 │       └── websocket/
-│           └── attendance_ws.py # WS /ws/attendance/{class_id}
-│
-├── frontend/                   # Next.js 14 (App Router)
-│   ├── Dockerfile
-│   ├── src/app/
-│   │   ├── (auth)/login/       # Trang đăng nhập
-│   │   ├── dashboard/          # Dashboard thống kê
-│   │   ├── students/           # Quản lý sinh viên + enrollment
-│   │   ├── classes/            # Quản lý lớp học
-│   │   ├── attendance/         # Xem lịch sử điểm danh
-│   │   ├── devices/            # Quản lý thiết bị
-│   │   └── reports/            # Báo cáo
-│   ├── src/components/
-│   ├── src/hooks/
-│   └── src/store/              # Zustand stores
-│
-└── edge/                       # Edge device application
-    ├── Dockerfile
-    ├── requirements.txt
-    └── src/
-        ├── main.py             # Main loop: capture → detect → liveness → identify → sync
-        ├── config.py           # EdgeConfig from device.env
-        ├── ai/
-        │   ├── face_detection.py   # YOLOv8 face detector
-        │   ├── face_alignment.py   # 5-point landmark alignment
-        │   ├── face_embedding.py   # ArcFace R100 embedder
-        │   ├── pipeline.py         # Full 7-step pipeline
-        │   └── liveness/
-        │       ├── blink_detection.py    # EAR blink counter
-        │       ├── head_movement.py      # PnP head pose (solvePnP)
-        │       └── depth_estimation.py   # Depth liveness
-        ├── camera/stream.py        # Camera capture thread
-        ├── database/local_db.py    # SQLite local cache
-        └── sync/
-            ├── queue_sync.py       # Background sync daemon
-            └── heartbeat.py        # Cloud heartbeat reporter
+│           └── attendance_ws.py    # WS /ws/attendance/{class_id}
+├── ai-service/
+│   └── app/core/face_model.py      # InsightFace buffalo_sc singleton
+├── frontend/
+│   └── src/
+│       ├── app/
+│       │   ├── students/           # Enrollment 6-pose UI
+│       │   ├── attendance/
+│       │   └── devices/
+│       └── lib/api.ts              # getApiBase() / getWsBase()
+├── edge/
+│   └── src/
+│       ├── ai/
+│       │   ├── face_detection.py   # SCRFD (ONNX)
+│       │   ├── face_alignment.py   # 5-point → 112x112
+│       │   ├── face_embedding.py   # w600k_mbf (512-dim)
+│       │   ├── pipeline.py         # detect→liveness→embed→match
+│       │   └── liveness/
+│       ├── database/local_db.py    # SQLite: embeddings + offline_queue
+│       ├── sync/queue_sync.py      # SyncDaemon
+│       └── web/stream.py           # Flask: / · /video · /enroll · /enroll/lookup
+│                                   #        /enroll/capture · /enroll/finalize
+├── edge/esp8266/door_controller/
+│   └── door_controller.ino         # Arduino relay firmware
+├── nginx/default.conf
+└── infra/                          # AWS CDK (EC2 + RDS + ElastiCache)
 ```
 
 ---
 
-## 6. API Reference
+## 7. API Reference
 
 ### Authentication
 
-| Method | Endpoint | Auth | Mô tả |
-|---|---|---|---|
-| POST | `/api/auth/register` | Public | Tạo admin mới |
-| POST | `/api/auth/login` | Public | Đăng nhập, nhận JWT |
-| POST | `/api/auth/refresh` | Public | Refresh access token |
-
-**Login Request:**
-```json
+```
 POST /api/auth/login
-{
-  "email": "admin@school.com",
-  "password": "Admin@123"
-}
+{"email": "admin@school.edu.vn", "password": "admin123"}
+→ {"access_token": "eyJ...", "refresh_token": "eyJ...", "token_type": "bearer"}
 ```
 
-**Login Response:**
-```json
-{
-  "access_token": "eyJ...",
-  "refresh_token": "eyJ...",
-  "token_type": "bearer"
-}
-```
+### Students / Classes
 
----
-
-### Students
-
-| Method | Endpoint | Auth | Mô tả |
-|---|---|---|---|
-| GET | `/api/students/` | JWT | Danh sách sinh viên |
-| POST | `/api/students/` | JWT | Tạo sinh viên mới |
-| GET | `/api/students/{id}` | JWT | Thông tin sinh viên |
-| PUT | `/api/students/{id}` | JWT | Cập nhật sinh viên |
-| DELETE | `/api/students/{id}` | JWT | Xóa sinh viên |
-
-Headers: `Authorization: Bearer <access_token>`
-
----
-
-### Classes
-
-| Method | Endpoint | Auth | Mô tả |
-|---|---|---|---|
-| GET | `/api/classes/` | JWT | Danh sách lớp |
-| POST | `/api/classes/` | JWT | Tạo lớp |
-| GET | `/api/classes/{id}` | JWT | Thông tin lớp |
-| PUT | `/api/classes/{id}` | JWT | Cập nhật lớp |
-| DELETE | `/api/classes/{id}` | JWT | Xóa lớp |
-
----
+| Method | Endpoint | Auth |
+|---|---|---|
+| GET / POST | `/api/students/` | JWT |
+| GET / PUT | `/api/students/{id}` | JWT |
+| GET / POST | `/api/classes/` | JWT |
 
 ### Attendance
 
 | Method | Endpoint | Auth | Mô tả |
 |---|---|---|---|
-| POST | `/api/attendance/` | Device Token | Edge device ghi điểm danh |
-| POST | `/api/attendance/bulk-sync` | Device Token | Sync offline queue từ edge |
-| GET | `/api/attendance/class/{class_id}` | JWT | Lịch sử điểm danh của lớp |
+| POST | `/api/attendance/` | Device Token | Edge ghi điểm danh |
+| POST | `/api/attendance/bulk-sync` | Device Token | Sync offline queue |
+| GET | `/api/attendance/class/{id}` | JWT | Lịch sử |
 
-**Device Token header:** `X-Device-Token: <device_token>`
+Header: `X-Device-Token: <token>`
 
----
+### Enrollment (Cloud)
 
-### Devices
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| POST | `/api/enrollment/capture-frame` | 1 frame → detect + buffer |
+| POST | `/api/enrollment/finalize` | Tổng hợp → lưu DB |
+| POST | `/api/enrollment/identify` | Nhận diện trong ảnh |
 
-| Method | Endpoint | Auth | Mô tả |
-|---|---|---|---|
-| POST | `/api/devices/register` | JWT | Đăng ký thiết bị mới |
-| POST | `/api/devices/heartbeat` | Device Token | Cập nhật trạng thái thiết bị |
-| GET | `/api/devices/` | JWT | Danh sách thiết bị |
-| GET | `/api/devices/embeddings/{class_id}` | Device Token | Lấy embeddings (AES encrypted) cho edge |
-
----
-
-### Enrollment (Face Registration)
-
-| Method | Endpoint | Auth | Mô tả |
-|---|---|---|---|
-| POST | `/api/enrollment/capture-frame` | JWT | Gửi 1 frame JPEG base64 → trích xuất embedding |
-| POST | `/api/enrollment/finalize` | JWT | Tổng hợp embeddings → lưu DB |
-| POST | `/api/enrollment/upload-embedding` | JWT | Upload trực tiếp embedding base64 |
-| POST | `/api/enrollment/identify` | JWT | Nhận diện khuôn mặt trong ảnh |
-
-**Capture Frame:**
 ```json
 POST /api/enrollment/capture-frame
-{
-  "student_id": 1,
-  "frame_b64": "<base64 JPEG, không có data:image prefix>",
-  "step_index": 0
-}
+{"student_id": "uuid", "frame_b64": "<base64>", "step_index": 0}
+→ {"accepted": true, "quality": 0.87, "buffered": 3}
 ```
 
-**Response:**
-```json
-{
-  "accepted": true,
-  "quality": 0.8723,
-  "buffered": 3
-}
-```
+Cần ≥5 frames accepted trước finalize.
 
-**Finalize:**
-```json
-POST /api/enrollment/finalize
-{ "student_id": 1 }
-```
+### Edge Local Enrollment (Flask :5000)
 
-> Cần ít nhất **5 frames hợp lệ** trước khi finalize. Embedding được lưu mã hóa AES-256-GCM.
-
----
+| Method | Endpoint | Mô tả |
+|---|---|---|
+| GET | `/enroll` | Trang HTML đăng ký 6-pose |
+| GET | `/enroll/lookup?code=FSB001` | Tra cứu sinh viên |
+| POST | `/enroll/capture` | Capture → detect + embed |
+| POST | `/enroll/finalize` | Lưu `is_local=1` |
 
 ### WebSocket
 
@@ -457,529 +376,283 @@ POST /api/enrollment/finalize
 WS /ws/attendance/{class_id}
 ```
 
-Real-time attendance updates cho dashboard. Gửi JSON mỗi khi có điểm danh mới trong lớp.
+Broadcast real-time mỗi khi edge ghi điểm danh.
 
 ---
 
-## 7. Dữ liệu mặc định & Tài khoản test
+## 8. Tài khoản mặc định
 
-> Đây là dữ liệu đã được seed trong môi trường development. **KHÔNG dùng trong production.**
+> **CHỈ dùng trong development.**
 
-### Tài khoản Admin
+| Loại | Thông tin |
+|---|---|
+| Admin email | `admin@school.edu.vn` |
+| Admin password | `admin123` |
+| PostgreSQL DB | `attendance_db` / user `doanbac07` / pw `070301` |
+| Device Token | `1cca41cee8e041ca8f91dd79b3530490` |
+| Class ID (AI501-01) | `6803980d-be34-43be-be76-8e49cb19a2a6` |
+| AES Key | `5fc0fa62e37680651a6a782d13856c6b3f4e36c5472dbd5705c52b5a968ccb1b` |
 
-| Email | Password | Ghi chú |
+---
+
+## 9. Pipeline AI
+
+### Cloud-side — InsightFace buffalo_sc
+
+```
+Webcam (6 poses × 5 frames)
+  → JPEG base64 → /api/enrollment/capture-frame
+  → SCRFD Detection → bbox + 5 landmarks
+  → Alignment → 112×112 affine warp
+  → w600k_mbf.onnx (ArcFace MobileFaceNet) → 512-dim L2-normalized
+  → Quality check → buffer → finalize → weighted avg → AES-encrypt → DB
+```
+
+### Edge-side — ONNX Runtime (Raspberry Pi)
+
+```
+Camera Frame (640×480 @ 20fps)
+  ├──▶ Camera thread → MJPEG stream (/video)
+  └──▶ AI worker thread (async queue maxsize=1)
+        [1] SCRFD Detection (yolov8_face_320.onnx)
+            NOTE: output post-sigmoid — KHÔNG apply sigmoid lại
+        [2] 5-point landmark → 112×112 crop
+        [3] Liveness: depth auto-pass nếu disabled OR head pose
+        [4] w600k_mbf.onnx → 512-dim embedding
+            CÙNG model cloud → embedding space tương thích
+        [5] Cosine similarity vs local cache (threshold 0.45)
+        → Recognized: POST /api/attendance/ (hoặc SQLite queue)
+```
+
+### Edge /enroll — Offline Enrollment
+
+1. Mã SV → `/enroll/lookup` → auto-fill tên
+2. JS capture `/enroll/capture` mỗi 600ms → detect + embed → buffer
+3. 6 poses × 5 frames = 30 embeddings
+4. `/enroll/finalize` → average → L2-norm → AES-encrypt → `is_local=1`
+
+---
+
+## 10. Edge Device — Chi tiết
+
+### Thread Architecture
+
+```
+main.py
+  ├── Flask thread         (port 5000)
+  ├── Camera loop thread   (20fps, non-blocking)
+  ├── AI worker thread     (queue maxsize=1)
+  ├── SyncDaemon thread    (embeddings + attendance sync)
+  └── Heartbeat thread     (POST mỗi 30s)
+```
+
+### Model Files (~/attendance-edge/models/)
+
+| File | Size | Mô tả |
 |---|---|---|
-| `admin@school.com` | `Admin@123` | Tài khoản chính để test |
-| `admin@school.edu.vn` | *(xem DB)* | Tài khoản phụ |
+| `yolov8_face_320.onnx` | ~17 MB | SCRFD face detector |
+| `w600k_mbf.onnx` | ~13 MB | InsightFace buffalo_sc — PHẢI khớp với cloud |
+| `depth_lite.onnx` | tuỳ chọn | Auto-disable nếu không có |
 
-### Thông tin Database
+> **Quan trọng**: Dùng `arcface_r100.onnx` thay vì `w600k_mbf.onnx` → cosine_sim ≈ 0 → không nhận diện.
 
-```
-Host: localhost:5432
-Database: attendance_db
-User: doanbac07
-Password: 070301
-```
+### Local SQLite DB (local_embeddings)
 
-Kết nối trực tiếp:
-```bash
-docker exec -it smart-attendance-aiot-postgres-1 psql -U doanbac07 -d attendance_db
-```
+| Column | Type | Mô tả |
+|---|---|---|
+| student_id | TEXT | UUID từ cloud |
+| student_code | TEXT | FSB001… |
+| full_name | TEXT | Họ tên |
+| embedding_enc | BLOB | AES-GCM encrypted 512-dim |
+| is_local | INTEGER | 0=cloud sync · 1=đăng ký tại thiết bị |
+| updated_at | TEXT | Timestamp |
 
-### Device Token (Test)
+### Offline Resilience
 
-```
-b7da9fc490c04c20bcd0d4c8165a1ae4
-```
+- Mất mạng → ghi vào `offline_queue` SQLite
+- SyncDaemon bulk-sync khi có mạng trở lại
+- Cooldown 10s giữa các lần nhận diện cùng sinh viên
 
-Dùng trong header: `X-Device-Token: b7da9fc490c04c20bcd0d4c8165a1ae4`
+### ESP8266 Door Controller
 
-### Dữ liệu test có sẵn
-
-- **4 Sinh viên**: SV001, SV002, SV003, SV004 (tất cả thuộc lớp CS101)
-- **2 Lớp học**: ID=1 (không có sinh viên), ID=2 (CS101 - Lập trình Python)
-- **1 Thiết bị**: Token `b7da9fc490c04c20bcd0d4c8165a1ae4`, gắn với lớp CS101
-- **Face embeddings**: Tất cả 4 sinh viên đã có embedding (mã hóa AES-256-GCM)
-- **1 bản ghi điểm danh**: SV001 đã được điểm danh trong lớp CS101
+- HTTP server port 80: `POST /open` (relay 3s) · `GET /status`
+- State machine: IDLE → OPENING → OPEN → CLOSING
+- Flash: Arduino IDE, board "LOLIN D1 R2", baud 115200
 
 ---
 
-## 8. Pipeline AI nhận diện khuôn mặt
+## 11. Bảo mật
 
-### 8.1 Server-side (InsightFace buffalo_sc)
-
-```
-Frame JPEG
-    │
-    ▼
-RetinaFace Detection (bounding box + 5 landmarks)
-    │
-    ▼
-Face Alignment (112×112 affine transform)
-    │
-    ▼
-ArcFace R100 Embedding (512-dim float32 vector)
-    │
-    ▼
-Quality check (blur, brightness, face size)
-    │
-    ▼
-Cosine Similarity vs stored embeddings
-    │
-    ▼
-Threshold: 0.65 → MATCH / NO MATCH
-```
-
-**Model**: `buffalo_sc` (nhẹ, phù hợp CPU server)
-- Detection: RetinaFace (ResNet-50 backbone)
-- Recognition: ArcFace (ResNet-100 backbone)
-
-### 8.2 Edge-side (ONNX Runtime)
-
-```
-Camera Frame
-    │
-    ▼
-[Step 1] YOLOv8-Face (yolov8_face_320.onnx) — Detect face bbox
-    │
-    ▼
-[Step 2] 5-Point Landmark Alignment
-    │
-    ▼
-[Step 3] Image Enhancement (CLAHE, denoise)
-    │
-    ▼
-[Step 4] Liveness Check (3-layer)
-    │  ├── EAR Blink Detection (dlib landmarks)
-    │  ├── Head Pose PnP (solvePnP với 3D model points)
-    │  └── Depth Estimation (depth_estimator.onnx)
-    │
-    ▼
-[Step 5] ArcFace R100 Embedding (arcface_r100.onnx)
-    │
-    ▼
-[Step 6] Cosine Similarity vs local cache (SQLite)
-    │
-    ▼
-[Step 7] POST /api/attendance/ hoặc enqueue offline
-```
-
-### 8.3 Multi-frame Enrollment (Browser Webcam)
-
-Quy trình đăng ký khuôn mặt qua web:
-
-1. Admin mở trang Student Detail → "Đăng ký khuôn mặt"
-2. Frontend chụp ảnh từ webcam, gửi **từng frame** lên `/api/enrollment/capture-frame`
-3. Server detect face → extract embedding → buffer vào `_enrollment_sessions[student_id]`
-4. Sau khi đủ ≥5 frames accepted, frontend gọi `/api/enrollment/finalize`
-5. Server tính **weighted average → re-normalize** → AES-256-GCM encrypt → lưu `students.face_embedding`
-
----
-
-## 9. Edge Device
-
-### 9.1 Cấu hình
-
-Tạo file `edge/config/device.env`:
-
-```env
-DEVICE_TOKEN=b7da9fc490c04c20bcd0d4c8165a1ae4
-CLASS_ID=2
-CLOUD_API_URL=http://<your-server-ip>:8000
-SYNC_INTERVAL_SEC=30
-
-CAMERA_SOURCE=0
-FRAME_WIDTH=1280
-FRAME_HEIGHT=720
-CAPTURE_FPS=10
-PROCESS_EVERY_N_FRAMES=3
-
-DETECTION_MODEL=/app/models/yolov8_face_320.onnx
-EMBEDDING_MODEL=/app/models/arcface_r100.onnx
-DEPTH_MODEL=/app/models/depth_estimator.onnx
-
-COSINE_THRESHOLD=0.65
-LIVENESS_BLINK_THRESHOLD=0.25
-
-AES_KEY=0000000000000000000000000000000000000000000000000000000000000000
-LOCAL_DB_PATH=/app/data/local.db
-ORT_NUM_THREADS=4
-```
-
-> ⚠️ `AES_KEY` phải giống hệt key trong `backend/.env` để decrypt embeddings đúng.
-
-### 9.2 Chạy Edge bằng Docker
-
-```bash
-cd edge
-docker-compose up -d --build
-```
-
-### 9.3 Models cần thiết
-
-Đặt vào `edge/models/`:
-- `yolov8_face_320.onnx` — YOLOv8 face detection (320×320)
-- `arcface_r100.onnx` — ArcFace ResNet-100 embedding
-- `depth_estimator.onnx` — Depth liveness estimation
-
-### 9.4 Offline Resilience
-
-Khi cloud không khả dụng:
-- Edge lưu record vào SQLite queue (`edge/data/local.db`)
-- `SyncDaemon` background thread chạy mỗi `SYNC_INTERVAL_SEC` giây
-- Gọi `POST /api/attendance/bulk-sync` khi có mạng
-- Cooldown 10 giây giữa các lần nhận diện cùng một sinh viên
-
----
-
-## 10. Bảo mật
-
-### AES-256-GCM Encryption
-
-Face embedding **KHÔNG BAO GIỜ** lưu dạng plaintext. Mọi embedding đều được:
+### AES-256-GCM
 
 ```python
-# Encrypt (backend/core/encryption.py)
-key = bytes.fromhex(AES_KEY)  # 32 bytes
-cipher = AESGCM(key)
-nonce = os.urandom(12)         # 12 bytes random
-ciphertext = cipher.encrypt(nonce, plaintext, None)
-stored = nonce + ciphertext    # 12 + len(plaintext) bytes
+aesgcm = AESGCM(bytes.fromhex(AES_KEY))   # 32-byte key
+nonce  = os.urandom(12)                     # 96-bit nonce
+stored = nonce + aesgcm.encrypt(nonce, raw_float32_bytes, None)
+# 12 + (512×4 + 16) = 2076 bytes stored
 ```
+
+Embedding không bao giờ lưu plaintext.
 
 ### JWT
 
-- **Access Token**: Hết hạn sau 15 phút
-- **Refresh Token**: Hết hạn sau 7 ngày
-- Thuật toán: HS256
-- Claim: `sub` = admin email, `exp` = expiry
+- Access Token: 15 phút (HS256)
+- Refresh Token: 7 ngày
+- Set `JWT_SECRET_KEY` cố định trong `backend/.env` cho production
 
-### Device Authentication
+### Device Auth
 
-Edge device dùng `X-Device-Token` header (UUID v4). Token được hash và lưu trong DB. Mỗi token chỉ gắn với một device cụ thể.
+`X-Device-Token` header — bcrypt hash trong DB, gắn 1 thiết bị cụ thể.
 
 ### Rate Limiting
 
-- 100 requests/phút per IP (Redis-backed)
-- Áp dụng cho tất cả `/api/*` endpoints
+100 req/phút per IP (Redis) trên tất cả `/api/*`.
 
 ---
 
-## 11. Các lỗi đã gặp & cách xử lý
+## 12. Bugs đã gặp & cách xử lý
 
-### 🐛 Bug 1: `ImportError: cannot import 'Base' from app.models`
+### Bug 1 — Double-sigmoid (SCRFD detector)
 
-**Nguyên nhân**: `app/models/__init__.py` rỗng. `Base` được định nghĩa trong `app/database/session.py`, không phải `app/models/`.
+**Triệu chứng**: ~4200 khuôn mặt rác/frame, confidence ≈ 0.5 tất cả.
 
-**Fix**: `main.py` phải import:
+**Nguyên nhân**: Model output đã post-sigmoid, code apply thêm lần nữa → anchors ≈ 0.5 vượt threshold.
+
+**Fix** (`face_detection.py`):
 ```python
-# ❌ Sai
-from app.models import Base
-
-# ✅ Đúng
-from app.database.session import engine, Base
+_already_sigmoid = arr.min() >= 0 and arr.max() <= 1.0
+scores = raw if _already_sigmoid else _sigmoid(raw)
 ```
 
 ---
 
-### 🐛 Bug 2: `ImportError: store_embedding, identify_face`
+### Bug 2 — Liveness stuck (không bao giờ pass)
 
-**Nguyên nhân**: `enrollment.py` import `store_embedding` và `identify_face` như module-level functions, nhưng chúng là **class methods** của `FaceService`.
+**Triệu chứng**: UI "⏳ Đang kiểm tra" mãi mãi.
 
-**Fix**: Thêm module-level proxy functions vào cuối `face_service.py`:
+**Nguyên nhân**: Logic `blink AND head AND depth` — blink luôn False vì thiếu eye landmarks.
+
+**Fix** (`pipeline.py`):
 ```python
-# Module-level proxies (để import trực tiếp)
-async def store_embedding(db, student_id, emb_b64):
-    return await face_service.store_embedding(db, student_id, emb_b64)
-
-async def identify_face(db, emb_b64, threshold=None):
-    return await face_service.identify_face(db, emb_b64, threshold)
+def is_complete(self) -> bool:
+    return self.depth_passed or self._head._done
 ```
 
 ---
 
-### 🐛 Bug 3: Timezone datetime error trong device heartbeat
+### Bug 3 — Embedding mismatch (cosine_sim ≈ 0)
 
-**Nguyên nhân**: `datetime.now(timezone.utc)` tạo timezone-aware datetime, nhưng SQLAlchemy `DateTime` column (không có `timezone=True`) là naive.
+**Triệu chứng**: Face ✅, liveness ✅, recognized: None.
 
-**Fix** trong `device_service.py`:
-```python
-# ❌ Sai - timezone-aware
-from datetime import datetime, timezone
-device.last_heartbeat = datetime.now(timezone.utc)
+**Nguyên nhân**: Cloud dùng `w600k_mbf.onnx`, edge dùng `arcface_r100.onnx` — khác embedding space hoàn toàn.
 
-# ✅ Đúng - naive UTC
-from datetime import datetime
-device.last_heartbeat = datetime.utcnow()
-```
+**Fix**: Edge phải dùng cùng model `w600k_mbf.onnx`.
 
 ---
 
-### 🐛 Bug 4: `MissingGreenlet` error khi update student
+### Bug 4 — Video lag / low fps
 
-**Nguyên nhân**: SQLAlchemy async không hỗ trợ lazy loading attribute access sau khi flush trong greenlet context. `setattr` rồi `flush` rồi `refresh` gây conflict.
-
-**Fix** trong `students.py`: Dùng `UPDATE` statement trực tiếp rồi re-query:
-```python
-await db.execute(
-    update(Student).where(Student.id == student_id).values(**update_data)
-)
-await db.commit()
-# Re-query để trả về object mới
-result = await db.execute(select(Student).where(Student.id == student_id))
-return result.scalar_one()
-```
+**Fix**: Tách AI thành worker thread riêng với queue `maxsize=1`. Camera chạy 20fps không bị block.
 
 ---
 
-### 🐛 Bug 5: Pydantic v2 — `"Config" and "model_config" cannot be used together`
+### Bug 5 — Login dùng field sai
 
-**Nguyên nhân**: Pydantic v2 không cho phép dùng cả `model_config = ConfigDict(...)` và `class Config: ...` trong cùng một model.
-
-**Fix** trong `schemas/device.py`: Chỉ dùng `model_config`:
-```python
-from pydantic import ConfigDict
-
-class DeviceResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
-    # Bỏ class Config: ...
-```
+**Fix** frontend: `body: JSON.stringify({ email, password })` (không phải `username`).
 
 ---
 
-### 🐛 Bug 6: `DeviceResponse` field mismatch
+### Bug 6 — MissingGreenlet (SQLAlchemy async update)
 
-**Nguyên nhân**: Schema có fields `name`, `token`, `is_active` nhưng ORM model thực tế có `device_name`, `device_token` (không có `is_active`).
-
-**Fix**: Đồng bộ schema với model:
-```python
-class DeviceResponse(BaseModel):
-    id: int
-    device_name: str
-    device_token: str
-    ip_address: Optional[str]
-    location: Optional[str]
-    class_id: Optional[int]
-    status: str
-    last_heartbeat: Optional[datetime]
-```
+**Fix**: Dùng `UPDATE` statement trực tiếp, không dùng `setattr` + `flush` trong async context.
 
 ---
 
-### 🐛 Bug 7: Frontend build fail — duplicate login paths
+### Bug 7 — Pydantic v2 conflict
 
-**Nguyên nhân**: Tồn tại cả `src/app/(auth)/login/page.tsx` VÀ `src/app/login/page.tsx`. Next.js App Router resolve cả hai về cùng route `/login` → conflict.
-
-**Fix**: Xóa `src/app/login/page.tsx`, chỉ giữ `src/app/(auth)/login/page.tsx`.
+**Fix**: Chỉ dùng `model_config = ConfigDict(from_attributes=True)`, xóa `class Config:`.
 
 ---
 
-### 🐛 Bug 8: Frontend login dùng `username` thay vì `email`
+### Bug 8 — UUID serialization WS
 
-**Nguyên nhân**: Login form ban đầu gửi `{"username": "...", "password": "..."}` nhưng backend `LoginRequest` schema yêu cầu `email`.
-
-**Fix** trong `(auth)/login/page.tsx`:
-```tsx
-body: JSON.stringify({ email, password }), // ← email, không phải username
-```
+**Fix**: Convert UUID → string trước `json.dumps()`.
 
 ---
 
-### 🐛 Bug 9: Frontend vẫn gọi `/api/v1/` sau khi đổi prefix
+### Bug 9 — SCP sai path
 
-**Nguyên nhân**: Next.js Docker build cache giữ bundle cũ. Phải rebuild hoàn toàn.
+**Sai**: `scp stream.py pi@IP:~/attendance-edge/src/`
 
-**Fix**:
-```bash
-docker-compose down
-docker-compose up -d --build
-```
+**Đúng**: `scp edge/src/web/stream.py pi@IP:~/attendance-edge/src/web/stream.py`
 
 ---
 
-### 🐛 Bug 10: Duplicate `GET /` route trong `students.py`
+## 13. Trạng thái & Roadmap
 
-**Nguyên nhân**: Có 2 `@router.get("/")` trong cùng file. FastAPI dùng cái đầu tiên, cái sau bị shadow.
-
-**Fix**: Xóa route thứ hai (duplicate).
-
----
-
-## 12. Lưu ý quan trọng
-
-### ⚠️ AES Key phải nhất quán
-
-Key mã hóa embedding **phải giống nhau** trên Backend và Edge Device. Nếu khác nhau:
-- Edge không decrypt được embedding từ Cloud
-- Server không verify được embedding từ Edge
-- Toàn bộ face recognition sẽ fail silently
-
-### ⚠️ InsightFace model tự download lần đầu
-
-InsightFace tự download model `buffalo_sc` vào `/app/models` (Docker volume `insightface_models`) khi khởi động lần đầu. Cần Internet và mất khoảng 2-3 phút.
-
-### ⚠️ `_enrollment_sessions` là in-memory
-
-Session buffer của enrollment flow lưu trong RAM (`_enrollment_sessions` dict). Nếu backend restart trong lúc đang enrollment, session bị mất. Sinh viên cần bắt đầu lại từ đầu.
-
-**TODO**: Migrate sang Redis để persist enrollment sessions.
-
-### ⚠️ JWT Secret key
-
-`settings.SECRET_KEY` và `settings.JWT_SECRET_KEY` mặc định dùng `secrets.token_urlsafe(32)` — **random mỗi lần restart**. Nghĩa là mọi token đều invalid sau khi restart backend!
-
-**Fix cho production**: Set cố định trong `backend/.env`:
-```env
-JWT_SECRET_KEY=your-fixed-256-bit-secret-key
-```
-
-### ⚠️ CORS đang để `allow_origins=["*"]`
-
-Chỉ phù hợp development. Production phải restrict:
-```python
-allow_origins=["https://yourdomain.com"]
-```
-
-### ⚠️ Enrollment cần ≥5 frames
-
-Nếu gửi ít hơn 5 frames chất lượng tốt trước khi finalize, server trả lỗi 422. Đảm bảo:
-- Ánh sáng đủ
-- Khuôn mặt không bị che
-- Không bị blur (threshold: 60.0 Laplacian variance)
-
----
-
-## 13. Hướng phát triển tiếp theo
-
-### 🚀 Ngắn hạn (1-2 tuần)
-
-- [x] **Migrate enrollment sessions sang Redis** — ✅ DONE (session 2026-03-01)
-- [x] **Fix JWT secret** — ✅ DONE (session 2026-03-01)
-- [x] **WebSocket real-time broadcast** — ✅ DONE (session 2026-03-02) — Redis Pub/Sub multi-worker fix
-- [x] **Alembic Migrations** — ✅ DONE (session 2026-03-02) — full setup, initial migration generated
-- [x] **AWS CDK Deployment files** — ✅ DONE (session 2026-03-02) — infra/ directory
-- [x] **Cloudflare Tunnel + nginx** — ✅ DONE (session 2026-03-02) — PC-as-cloud, zero cost
-- [x] **Frontend dynamic URL** — ✅ DONE (session 2026-03-02) — `getApiBase()` / `getWsBase()`
-- [x] **Raspberry Pi edge deployment** — ✅ DONE (session 2026-03-04) — Docker build, AES_KEY fix, embedding sync OK
-- [x] **Web Kiosk camera fix (Pi browser)** — ✅ DONE (session 2026-03-04) — relaxed constraints, `enumerateDevices()`, `setCamReady` after `play()`
-- [x] **ESP8266 Door Controller firmware** — ✅ DONE (session 2026-03-04) — `ESP8266WebServer`, state machine, CORS, exit button
-- [x] **Backend `POST /api/devices/exit` endpoint** — ✅ DONE (session 2026-03-04)
-- [x] **Kiosk token bảo mật** — ✅ DONE (session 2026-03-04) — token lưu `localStorage`, URL sạch `/kiosk/{classId}`
-- [x] **ESP8266 gọi từ browser (CÙNG mạng LAN)** — ✅ DONE (session 2026-03-04) — Docker backend không reach được ESP8266 → browser gọi trực tiếp
-- [ ] **Fix LED_RED GPIO0 boot issue** — đổi sang D6/GPIO12, cần flash lại ESP8266
-- [ ] **Magnet overheating** — thêm resistor 33Ω 5W hoặc MOSFET peak-and-hold
-- [ ] **Test end-to-end hoàn chỉnh** — face scan → ESP8266 relay click → door open
-
-### 🏗️ Trung hạn (1-2 tháng)
-
-- [x] **AWS CDK Deployment** — ✅ DONE (session 2026-03-02) — EC2 + RDS + ElastiCache (xem `infra/`)
-- [x] **PC-as-Cloud (Cloudflare Tunnel)** — ✅ DONE (session 2026-03-02) — miễn phí, zero config
-- [x] **Edge Device thực tế (Raspberry Pi 4)** — ✅ DONE (session 2026-03-04) — Docker running, face sync, recognition loop
-- [x] **ESP8266 Door Lock Controller** — ✅ DONE (session 2026-03-04) — web server mode, multi-device linh hoạt
-
-- [ ] **Edge Firmware hoàn thiện**
-  - Watchdog auto-restart khi crash
-  - OTA firmware update qua Cloud
-  - Camera stream với CSI Camera Module
-
-- [ ] **Cải thiện nhận diện trên Pi**
-  - Camera chất lượng cao hơn (Sony IMX519)
-  - Tắt liveness challenge mặc định trên Pi (góc lệch khó pass)
-  - Tăng exposure/gain cho môi trường ánh sáng yếu
-
-- [ ] **ESP8266 mở rộng** (optional)
-  - LCD I2C hiển thị tên sinh viên sau nhận diện
-  - RFID backup khi face recognition fail liên tiếp
-  - OTA update firmware qua WiFi
-
-### 🎯 Dài hạn
-
-- [ ] **Mobile App** (React Native)
-  - Admin app: xem báo cáo real-time
-  - Sinh viên app: xem lịch sử điểm danh cá nhân
-  - Push notification khi vắng mặt
-
-- [ ] **Advanced Analytics**
-  - Báo cáo tỷ lệ chuyên cần theo tuần/tháng/kỳ
-  - Phát hiện pattern bất thường
-  - Export Excel/PDF
-
-- [ ] **Multi-camera Support**
-  - Nhiều camera/thiết bị trong cùng 1 phòng
-  - Camera RTSP stream từ IP Camera
-
-- [ ] **Model Upgrade**
-  - Switch từ `buffalo_sc` → `buffalo_l` (accuracy cao hơn, cần GPU)
-  - Fine-tune ArcFace trên dataset sinh viên Việt Nam
-  - Upgrade liveness: FAS (Face Anti-Spoofing) model chuyên dụng
-
-- [ ] **Privacy & Compliance**
-  - Xin phép sinh viên trước khi thu thập biometric
-  - Định kỳ xóa embedding cũ
-  - Audit log cho mọi truy cập embedding
-
----
-
-## 📊 Trạng thái hiện tại (Development)
+### Trạng thái hiện tại
 
 | Component | Status | Ghi chú |
 |---|---|---|
-| Backend API | ✅ Hoạt động | Tất cả endpoints tested |
-| PostgreSQL | ✅ Hoạt động | Có test data |
-| Redis | ✅ Hoạt động | Rate limiting + WS Pub/Sub |
-| Frontend | ✅ Build thành công | Dynamic URL — hoạt động mọi domain |
-| InsightFace | ✅ Load được | buffalo_sc model |
-| Web Kiosk | ✅ Hoạt động | Camera fix cho Pi browser, token qua localStorage |
-| Raspberry Pi Edge | ✅ Hoạt động | Docker ARM64, embedding sync, recognition loop |
-| ESP8266 Firmware | ✅ Viết xong | Web server mode, CORS, state machine — cần flash |
-| Door Relay | ⏳ Chờ test | Cần flash firmware + nhập IP vào Devices page |
-| Magnet Heat | ⚠️ Cần fix | Thêm resistor 33Ω 5W hoặc MOSFET |
-| Face Enrollment (browser) | ⚠️ Endpoint ready | UI chưa fully tested end-to-end |
-| WebSocket (single-worker) | ✅ Tested | `test_ws_broadcast.py` pass |
-| WebSocket (multi-worker) | ✅ Fixed | Redis Pub/Sub — `--workers 2` OK |
-| Alembic Migrations | ✅ Hoạt động | `start.sh` chạy `alembic upgrade head` tự động |
-| Nginx reverse proxy | ✅ Hoạt động | Port 80 gom backend + frontend + WS |
-| Cloudflare Tunnel | ✅ Config sẵn | `docker compose up -d cloudflared` → public URL |
-| AWS CDK (infra/) | ✅ Code ready | EC2 + RDS + ElastiCache — chưa deploy thật |
-| Edge Heartbeat | ✅ Tested | Qua Cloudflare URL |
-| Edge GET embeddings | ✅ Tested | Qua Cloudflare URL |
-| Edge Bulk-sync | ⚠️ Partial | POST OK nhưng WS broadcast chưa fire |
-| AES Encryption | ✅ Hoạt động | AES-256-GCM |
-| JWT Auth | ✅ Hoạt động | Email-based |
+| Backend API | ✅ | Tất cả endpoints hoạt động |
+| PostgreSQL + Alembic | ✅ | Auto-migration khi startup |
+| Redis | ✅ | Rate limit + WS pubsub |
+| InsightFace buffalo_sc (cloud) | ✅ | w600k_mbf + SCRFD |
+| Frontend Next.js 14 | ✅ | Dynamic URL |
+| Cloud enrollment (6-pose) | ✅ | Tested end-to-end |
+| WebSocket real-time | ✅ | Redis PubSub |
+| Pi camera 20fps | ✅ | Smooth MJPEG |
+| Pi AI worker thread | ✅ | Async queue |
+| Pi SCRFD detection | ✅ | conf=0.843, double-sigmoid fixed |
+| Pi liveness | ✅ | Auto-pass (depth disabled) |
+| Pi embedding w600k_mbf | ✅ | buffalo_sc MobileFaceNet, khớp với cloud |
+| Pi recognition | ⚠️ | Cần re-enroll với đúng model (buffalo_sc) |
+| Pi /enroll offline (6-pose) | ✅ | UI + API hoàn chỉnh |
+| Pi student lookup by code | ✅ | Auto-fill từ mã sinh viên |
+| Edge offline queue + sync | ✅ | SQLite + bulk-sync |
+| ESP8266 door controller | ✅ | Firmware xong, chưa flash |
+| Nginx reverse proxy | ✅ | Port 80 |
+| AWS CDK infra | ✅ | Code ready, chưa deploy |
+
+### Roadmap ngắn hạn
+
+- [ ] Verify `w600k_mbf.onnx` download → test recognition end-to-end
+- [ ] Flash ESP8266 → test relay mở cửa
+- [ ] Fix LED_RED GPIO0 boot issue (đổi sang GPIO12)
+- [ ] Xử lý magnet overheating
+
+### Roadmap dài hạn
+
+- [ ] Mobile app (React Native)
+- [ ] Multi-camera RTSP support
+- [ ] Fine-tune model trên dataset sinh viên
+- [ ] RFID fallback
 
 ---
 
-## 🔧 Các lệnh hữu ích
+## 🔧 Quick Reference Commands
 
 ```bash
-# Xem logs backend real-time
-docker-compose logs -f backend
-
-# Vào container backend (debug)
-docker exec -it smart-attendance-aiot-backend-1 bash
-
-# Chạy query DB trực tiếp
+# ── Cloud ─────────────────────────────────────────────────────────
+docker compose up -d --build
+docker compose logs -f backend
+docker compose down -v   # reset hoàn toàn
+docker exec smart-attendance-aiot-backend-1 python reset_admin_password.py
 docker exec -it smart-attendance-aiot-postgres-1 psql -U doanbac07 -d attendance_db
 
-# Xem tất cả sinh viên
-# (trong psql): SELECT id, student_code, full_name, class_id FROM students;
+# ── Pi Edge (từ Mac) ──────────────────────────────────────────────
+PI=192.168.x.x
+KEY=~/.ssh/pi_edge_key
 
-# Xem tất cả thiết bị
-# (trong psql): SELECT id, device_name, device_token, status FROM devices;
+scp -i $KEY edge/src/web/stream.py pi@$PI:~/attendance-edge/src/web/stream.py
+ssh -i $KEY pi@$PI 'cd ~/attendance-edge && docker compose restart'
+ssh -i $KEY pi@$PI 'docker logs attendance-edge-edge-ai-1 --tail 30'
+curl http://$PI:5000/status
 
-# Flush Redis cache
-docker exec -it smart-attendance-aiot-redis-1 redis-cli FLUSHALL
-
-# Test health endpoint
-curl http://localhost:8000/health
-
-# Test login
-curl -X POST http://localhost:8000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@school.com","password":"Admin@123"}'
-
-# Swagger UI
-# Mở http://localhost:8000/docs
+# SQLite trên Pi
+ssh -i $KEY pi@$PI 'docker exec attendance-edge-edge-ai-1 \
+  sqlite3 /app/data/local.db \
+  "SELECT student_code, full_name, is_local FROM local_embeddings;"'
 ```
 
 ---
@@ -988,738 +661,8 @@ curl -X POST http://localhost:8000/api/auth/login \
 
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
 - [InsightFace GitHub](https://github.com/deepinsight/insightface)
-- [SQLAlchemy Async ORM](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html)
-- [Next.js App Router](https://nextjs.org/docs/app)
-- [Pydantic v2 Migration](https://docs.pydantic.dev/latest/migration/)
-- [Paper_v2.md](./Paper_v2.md) — Tài liệu nghiên cứu & thiết kế hệ thống chi tiết
-
----
-
-## 📋 Nhật ký phát triển (Session Log)
-
-### Session 2026-03-01
-
-**Công việc đã hoàn thành:**
-
-#### 1. ✅ Dịch toàn bộ Frontend UI sang tiếng Anh
-
-Tất cả các màn hình trong `frontend/src/app/` đã được dịch từ tiếng Việt sang tiếng Anh:
-
-| File | Nội dung thay đổi |
-|---|---|
-| `(auth)/login/page.tsx` | "Đăng nhập" → "Sign In", labels, error messages |
-| `dashboard/layout.tsx` | Nav labels: Overview, Students, Classes, Attendance, Devices, Reports; "Đăng xuất" → "Log Out" |
-| `components/layout/navbar.tsx` | "Đăng xuất" → "Log Out" |
-| `dashboard/page.tsx` | "Tổng quan hệ thống" → "System Overview", stat card labels |
-| `students/page.tsx` | Title, table headers, status badges, empty state |
-| `students/[id]/page.tsx` | Back, info labels, status values, face registration warning |
-| `students/enroll/page.tsx` | POSE_STEPS, camera error, success screen, all UI text |
-| `classes/page.tsx` | Title, form labels, buttons, status badges |
-| `attendance/page.tsx` | Title, WS status, table headers, "Có mặt/Vắng" → "Present/Absent" |
-| `devices/page.tsx` | Title, form labels, card body, empty state |
-| `reports/page.tsx` | Title, stat cards, table headers, CSV headers, date locale → `en-US` |
-
-> `components/layout/sidebar.tsx` — KHÔNG dịch vì là file legacy không được import ở đâu. Nav thật nằm trong `dashboard/layout.tsx`.
-
-#### 2. ✅ Fix JWT Secret Key — Dual Key Rotation
-
-**Vấn đề**: `config.py` dùng `secrets.token_urlsafe(32)` làm giá trị default → mỗi lần restart backend sinh key mới → toàn bộ token bị invalid, user bị logout.
-
-**Fix đã thực hiện:**
-
-- `backend/.env` đã có `JWT_SECRET_KEY` cố định (hex string 64 ký tự)
-- `backend/app/config.py`: thêm field `JWT_SECRET_KEY_OLD: Optional[str] = None`
-- `backend/app/core/jwt_handler.py`: `decode_token()` thử verify bằng key mới trước, nếu fail thì thử key cũ — **zero-downtime key rotation**
-
-```python
-# jwt_handler.py — decode_token() mới
-keys_to_try = [settings.JWT_SECRET_KEY]
-if settings.JWT_SECRET_KEY_OLD:
-    keys_to_try.append(settings.JWT_SECRET_KEY_OLD)
-
-for key in keys_to_try:
-    try:
-        return jwt.decode(token, key, algorithms=[settings.JWT_ALGORITHM])
-    except JWTError:
-        continue
-raise ValueError("Invalid token")
-```
-
-**Cách dùng khi cần rotation trong tương lai:**
-```env
-# backend/.env
-JWT_SECRET_KEY=<key_mới>
-JWT_SECRET_KEY_OLD=<key_cũ>   # uncomment trong thời gian transition (≥7 ngày)
-```
-
-#### 3. ✅ Migrate Enrollment Sessions từ In-Memory → Redis
-
-**Vấn đề**: `enrollment.py` dùng `_enrollment_sessions: dict = {}` → mất sạch khi backend restart giữa chừng enrollment.
-
-**Fix đã thực hiện:**
-
-**File mới** `backend/app/core/redis_client.py`:
-- Singleton async Redis client (`redis.asyncio`)
-- `get_redis()` / `close_redis()` cho lifecycle management
-
-**`backend/app/main.py`**:
-- Warm-up Redis khi startup, close gracefully khi shutdown
-
-**`backend/app/api/routes/enrollment.py`** — rewrite hoàn toàn:
-- Bỏ `_enrollment_sessions: dict`
-- Redis key: `enrollment:{student_id}` → JSON list of base64-encoded embeddings
-- **TTL 30 phút** — auto-expire nếu admin bỏ giữa chừng
-- Restart backend → session vẫn còn trong Redis ✅
-
-```
-TRƯỚC (in-memory):          SAU (Redis):
-restart → mất sạch         restart → vẫn còn
-multi-instance → fail      multi-instance → share được
-không TTL → leak memory    TTL 30 phút → tự dọn
-```
-
-#### 4. ✅ Rebuild Docker
-
-```bash
-docker-compose up -d --build backend frontend
-```
-Backend và Frontend đã được rebuild sau tất cả thay đổi trên.
-
----
-
-### Session 2026-03-02
-
-**Công việc đã hoàn thành:**
-
-#### 1. ✅ IP Webcam support cho Face Enrollment
-
-Thêm chế độ **IP Webcam** vào `frontend/src/app/students/enroll/page.tsx`:
-- Toggle giữa **Local Webcam** và **IP Webcam** (phone camera qua WiFi)
-- Kết nối test bằng `shot.jpg` snapshot thay vì `<video>` (tránh HTTPS self-signed cert issue)
-- Preview stream MJPEG qua `<img ref={imgRef}>` — browser render tốt hơn `<video>` với MJPEG
-- Capture frame: fetch `/shot.jpg?t=...` → `createImageBitmap()` → canvas → base64
-- Loading state "Connecting..." khi test kết nối
-
-#### 2. ✅ Fix JWT key random → cố định
-
-`config.py` dùng `secrets.token_urlsafe(32)` làm default → **key mới mỗi lần restart** → tất cả token invalid. Đã đổi thành key cố định.
-
-#### 3. ✅ Fix `security.py` và `dependencies.py` — dùng `decode_token()` dual-key
-
-Cả 2 file trước dùng `jwt.decode()` trực tiếp, bỏ qua dual-key logic trong `jwt_handler.py`. Đã sửa cả 2 dùng `decode_token()`.
-
-#### 4. ✅ Fix WebSocket broadcast attendance
-
-`attendance_service.py` save record nhưng không gọi `broadcast_attendance()`. Đã thêm broadcast sau mỗi `create_attendance()` — dashboard nhận event real-time.
-
-#### 5. ✅ Fix WebSocket 403 — thiếu prefix `/ws`
-
-Backend mount WS router không có prefix → route là `/attendance/2`, nhưng frontend kết nối `/ws/attendance/2`. Đã thêm `prefix="/ws"` vào `main.py`.
-
-#### 6. ✅ Fix `disconnect()` bug trong WebSocket manager
-
-`list.discard()` không tồn tại → lỗi khi client disconnect. Đã sửa thành `list.remove()` với try/except.
-
-#### 7. ✅ Fix password hash admin
-
-Admin password hash trong DB được tạo theo format cũ (không qua SHA256 prehash). Đã reset bằng script `reset_admin_password.py`.
-
-#### 8. ✅ Test end-to-end đầy đủ
-
-| Test | Kết quả |
-|---|---|
-| Login `admin@school.edu.vn / admin123` | ✅ 200 OK |
-| Face Enrollment qua IP Webcam | ✅ Thành công |
-| POST `/api/attendance/` với device token | ✅ 201 Created |
-| GET `/api/attendance/class/2` với Bearer token | ✅ 200 OK |
-| WebSocket `/ws/attendance/2` connect | ✅ Accepted |
-| WebSocket broadcast sau attendance POST | ✅ Nhận được event real-time |
-
----
-
-### Session 2026-03-02 (phần 2)
-
-**Công việc đã hoàn thành:**
-
-#### 1. ✅ Tạo AI Face Inference Microservice (`ai-service/`, port 9000)
-
-**Vấn đề cũ**: InsightFace (~1GB model, CPU-heavy) chạy thẳng trong backend process → backend nặng, không thể scale AI riêng, khó test.
-
-**Giải pháp**: Tách InsightFace sang microservice riêng:
-
-```
-TRƯỚC:                          SAU:
-Backend (port 8000)             Backend (port 8000)
-  └─ InsightFace (1GB)    →       └─ httpx → AI Service (port 9000)
-  └─ Auth/DB/API                  └─ Auth/DB/API/AES
-                                AI Service (port 9000)
-                                  └─ InsightFace (1GB)
-                                  └─ ArcFace extract
-                                  └─ Cosine similarity
-```
-
-**Files tạo mới:**
-
-| File | Mô tả |
-|---|---|
-| `ai-service/Dockerfile` | Python 3.11-slim + build-essential + curl + libGL |
-| `ai-service/requirements.txt` | insightface, onnxruntime, opencv, httpx |
-| `ai-service/app/main.py` | FastAPI + non-blocking model warm-up |
-| `ai-service/app/config.py` | MODEL_NAME, SERVICE_SECRET_KEY, thresholds |
-| `ai-service/app/core/face_model.py` | InsightFace wrapper: extract_embedding(), batch_identify() |
-| `ai-service/app/api/routes/inference.py` | POST /api/v1/extract, POST /api/v1/identify |
-| `backend/app/services/ai_client.py` | httpx async client gọi ai-service |
-
-**API ai-service:**
-
-```
-POST /api/v1/extract          Header: X-Service-Key
-  Body: { image_b64, min_blur }
-  Resp: { embedding_b64, quality, meta }
-
-POST /api/v1/identify         Header: X-Service-Key
-  Body: { probe_b64, gallery: [{student_id, embedding_b64}], threshold }
-  Resp: { matched, student_id, confidence, top_matches }
-
-GET  /health
-  Resp: { status, model_loaded, uptime_seconds }
-```
-
-**Backend refactored:**
-- `face_service.py`: remove InsightFace, `extract_embedding()` → async, gọi `ai_client`
-- `identify_face()`: AES decrypt local → gửi plain embeddings sang ai-service
-- **AES key KHÔNG rời khỏi backend** — ai-service chỉ làm toán cosine
-- Local fallback cosine similarity khi ai-service down
-
-**docker-compose.yml**: thêm `ai-service` service, `backend` depends_on `ai-service (healthy)`
-
-#### 2. ✅ Fix non-blocking model warm-up
-
-InsightFace load trong background thread → uvicorn start ngay → healthcheck pass ngay.
-
-#### 3. ✅ Test end-to-end
-
-| Test | Kết quả |
-|---|---|
-| `GET http://localhost:9000/health` | ✅ model_loaded: true |
-| `GET http://localhost:8000/health` | ✅ healthy |
-| Login via backend | ✅ JWT token OK |
-| Backend → ai-service (internal Docker network) | ✅ Connected |
-
----
-
-### Session 2026-03-02 (phần 4) — Student CRUD hoàn chỉnh + Student ID format
-
-**Vấn đề được báo cáo:** Màn hình quản lý sinh viên chưa có form thêm mới, sửa, xóa mềm. Student ID đang là số tự do (admin tự nhập), không có format chuẩn.
-
----
-
-#### 1. ✅ Student ID format: FSB001, FSB002, … (auto-generate)
-
-**Lý do chọn `FSB` prefix:**
-- `F` = FPT, `SB` = School of Business (hoặc tùy chỉnh theo trường)
-- Format `FSBxxx`: ngắn, đọc được, dễ nhớ
-- Hệ thống chuyên nghiệp thực tế dùng `[PREFIX][YEAR][SEQ]` (VD: `FIT2024001`) hoặc `[PREFIX][SEQ]` (VD: `FSB001`) — dự án này chọn kiểu thứ 2 cho đơn giản
-
-**Thay đổi backend:**
-
-`backend/app/services/student_service.py` — thêm hàm `generate_student_code()`:
-```python
-async def generate_student_code(db) -> str:
-    # Lấy MAX số suffix của các code dạng FSBxxx
-    # Trả về FSB001, FSB002, ... FSB999, FSB1000 (tự mở rộng)
-```
-
-`backend/app/schemas/student.py` — `student_code` trở thành optional:
-```python
-class StudentCreate(BaseModel):
-    student_code: Optional[str] = None  # None → auto FSBxxx
-```
-
-`backend/app/api/routes/students.py` — `POST /api/students/`:
-- Nếu `student_code` không truyền → gọi `generate_student_code()`
-- Nếu truyền → validate không trùng như cũ
-
----
-
-#### 2. ✅ Soft-delete (Deactivate) thay vì hard-delete
-
-**Trước:** `DELETE /{id}` gọi `delete_student_data()` → set `status=inactive` + xóa attendance + xóa embedding (hành vi không rõ ràng, không thể undo)
-
-**Sau — 2 endpoint phân biệt rõ:**
-
-| Endpoint | Hành vi |
-|---|---|
-| `PATCH /{id}/deactivate` | Soft-delete: `status=inactive`, xóa face embedding (GDPR). Attendance history GIỮ LẠI |
-| `PATCH /{id}/activate` | Re-activate: `status=active` (cần đăng ký face lại) |
-| `DELETE /{id}` | Hard-delete (admin only): xóa hoàn toàn student + attendance |
-
----
-
-#### 3. ✅ Backend API mới thêm
-
-| Endpoint | Ghi chú |
-|---|---|
-| `GET /api/students/?include_inactive=true` | Tham số mới: hiện cả sinh viên đã deactivate |
-| `PATCH /api/students/{id}/deactivate` | Soft-delete với GDPR biometric erase |
-| `PATCH /api/students/{id}/activate` | Re-activate |
-
----
-
-#### 4. ✅ Frontend — Student List page (`students/page.tsx`)
-
-**Tính năng mới:**
-- **"Add Student" button** → mở modal form (Full Name, Student ID optional, Email, Phone, Class)
-  - Để trống Student ID → backend tự sinh `FSBxxx`
-  - Admin có thể override bằng code tùy chỉnh
-- **"Deactivate" button** trên mỗi dòng → confirm modal → deactivate
-- **"Activate" button** cho các sinh viên inactive → re-activate ngay
-- **"Show inactive" checkbox** → toggle hiện/ẩn sinh viên không còn hoạt động
-- **Class name** hiển thị tên lớp thay vì ID số
-- Table sort theo `student_code` (FSB001, FSB002…)
-
----
-
-#### 5. ✅ Frontend — Student Detail page (`students/[id]/page.tsx`)
-
-**Tính năng mới:**
-- **"Edit Info" button** → chuyển sang inline edit form (full_name, email, phone, class)
-  - Save → PUT `/api/students/{id}` → refresh
-  - Cancel → quay lại view mode
-  - Success toast xuất hiện 3 giây sau khi save
-- **"Deactivate" button** (Active) / **"Activate" button** (Inactive) → confirm modal
-- Badge status (Active/Inactive) luôn hiển thị rõ
-- Class name hiển thị tên lớp thay vì ID
-
----
-
-#### 6. ✅ Rebuild Docker
-
-```bash
-docker-compose up -d --build backend frontend
-```
-
-Tất cả containers build thành công và running.
-
----
-
-### Session 2026-03-02 (phần 3) — Fix Pose Validation & Head Pose Estimation
-
-**Vấn đề được báo cáo:** Sau khi fix JWT 401, enrollment vẫn thất bại với lỗi:
-> "Pose 'Look straight at the camera': could not capture 5 valid frames after 60 attempts"
-
----
-
-#### 1. 🔍 Root Cause Analysis — pitch ≈ ±178° (solvePnP back-of-head bug)
-
-**Log bằng chứng từ backend:**
-```
-[enrollment] step=0 pose-rejected — yaw=-33.19 pitch=176.36 — Please look straight
-[enrollment] step=0 pose-rejected — yaw=-1.14 pitch=-178.39 — Please look straight
-[enrollment] step=0 pose-rejected — yaw=-34.05 pitch=173.57 — Please look straight
-(lặp lại 60 lần)
-```
-
-**Root cause:** `cv2.solvePnP` với `SOLVEPNP_EPNP` sinh ra **"back-of-head" solution** — rotation matrix `rmat` ngược chiều 180° so với thực tế. Hệ quả: `cv2.decomposeProjectionMatrix` trả pitch ≈ ±175° thay vì ~0°. Mặt người nhìn thẳng nhưng hệ thống tính như đang "xoay đầu 180°".
-
-**Các fix đã thử và thất bại:**
-1. ❌ **RQDecomp3x3 + tvec[2] flip check** — vẫn cho pitch ≈ ±175° vì rmat đã sai trước khi decompose
-2. ❌ **Đổi 3D model points (camera-centric → subject-centric)** — vẫn không giải quyết được ambiguity của EPnP với 5 điểm
-3. ❌ **Dùng `cv2.decomposeProjectionMatrix`** — kết quả tương đương, cùng bị flip
-
-**Kết luận:** Vấn đề căn bản với solvePnP: với chỉ 5 điểm frontal face, EPnP không thể tự phân biệt front/back solution một cách ổn định. Bất kỳ approach nào dựa trên solvePnP với 5 keypoints đều tiềm ẩn lỗi 180° flip.
-
----
-
-#### 2. ✅ Fix cuối cùng — Geometric Landmark Method (bỏ hoàn toàn solvePnP)
-
-**Giải pháp:** Thay toàn bộ solvePnP bằng phương pháp hình học đơn giản, tính trực tiếp yaw/pitch từ tỷ lệ vị trí landmark trong ảnh. Không có 180° ambiguity, không cần intrinsic matrix.
-
-**File thay đổi:** `ai-service/app/core/face_model.py`
-
-```python
-def _estimate_pose_geometric(kps, img_w, img_h):
-    """
-    InsightFace 5-pt keypoints: [left_eye, right_eye, nose_tip, left_mouth, right_mouth]
-    'left/right' = từ góc nhìn SUBJECT (không phải camera).
-    """
-    left_eye, right_eye, nose, left_mouth, right_mouth = kps[:5]
-
-    # ── Yaw ──────────────────────────────────────────────────────────────────
-    # eye midpoint horizontal vs nose horizontal
-    eye_mid_x = (left_eye[0] + right_eye[0]) / 2.0
-    eye_dist  = abs(left_eye[0] - right_eye[0]) + 1e-6  # interocular distance
-    # offset nose từ đường giữa mắt, normalize
-    yaw_raw = (eye_mid_x - nose[0]) / eye_dist
-    yaw_deg = np.clip(yaw_raw * 90.0, -90.0, 90.0)      # 0.5 offset ≈ 45°
-
-    # ── Pitch ────────────────────────────────────────────────────────────────
-    eye_mid_y   = (left_eye[1] + right_eye[1]) / 2.0
-    mouth_mid_y = (left_mouth[1] + right_mouth[1]) / 2.0
-    face_height = abs(mouth_mid_y - eye_mid_y) + 1e-6
-    t_raw = (nose[1] - eye_mid_y) / face_height  # neutral ≈ 0.5
-    pitch_deg = np.clip((t_raw - 0.5) * 120.0, -90.0, 90.0)
-
-    return round(yaw_deg, 2), round(pitch_deg, 2), None
-```
-
-**Convention kết quả (neutral face nhìn thẳng):**
-- yaw ≈ 0°, pitch ≈ 0° ✅ (không còn ±175°)
-- yaw > 0 → nose dịch trái ảnh → subject quay phải
-- yaw < 0 → nose dịch phải ảnh → subject quay trái
-- pitch > 0 → cúi xuống; pitch < 0 → ngẩng lên
-
-**Lưu ý:** Hàm `_estimate_pose_solvepnp()` vẫn giữ tên nhưng chỉ gọi `_estimate_pose_geometric()` (backward compat).
-
----
-
-#### 3. ✅ Cập nhật POSE_STEP_CONFIG phù hợp với geometric method
-
-**File:** `backend/app/api/routes/enrollment.py`
-
-| Step | Instruction | yaw_range | pitch_range |
-|------|-------------|-----------|-------------|
-| 0 | Look straight | (-20, 20) | (-20, 20) |
-| 1 | Turn LEFT (subject left = raw frame right → yaw < 0) | (-∞, -20) | (-40, 40) |
-| 2 | Turn RIGHT (yaw > 0) | (20, +∞) | (-40, 40) |
-| 3 | Tilt UP (chin raised → pitch < -20) | (-35, 35) | (-∞, -20) |
-| 4 | Tilt DOWN (lower chin → pitch > 20) | (-35, 35) | (20, +∞) |
-| 5 | Look straight again | (-20, 20) | (-20, 20) |
-
-**Giải thích sign convention với mirror CSS (scaleX -1):**
-- User thấy trên màn hình: quay trái (mirror) → trong raw frame: quay phải → nose dịch phải → `eye_mid_x - nose_x < 0` → **yaw < 0** ✅
-- User thấy trên màn hình: quay phải (mirror) → trong raw frame: quay trái → nose dịch trái → **yaw > 0** ✅
-
----
-
-#### 4. ✅ Các fix bổ sung từ đầu session
-
-**Fix 401 Unauthorized (phát hiện đầu session):**
-- **Root cause:** JWT token expire sau backend rebuild → frontend dùng token cũ → 60 requests đều 401 → báo lỗi "could not capture 5 valid frames" (lỗi mơ hồ, không nói rõ là 401)
-- **Fix frontend** `enroll/page.tsx`: detect `res.status === 401` → throw ngay với message rõ ràng "Session expired. Please log out and log in again"
-- **Log bằng chứng:** 60 dòng liên tiếp `"POST /api/enrollment/capture-frame HTTP/1.1" 401 Unauthorized`
-
-**Các thay đổi debug tạm thời (cần restore):**
-- `MIN_BLUR_ENROLLMENT = 0.0` (trong `enrollment.py`) — đặt về 0 để loại trừ blur là nguyên nhân. **Cần restore về 15-25 sau khi enrollment chạy ổn.**
-- `logger.warning("[BLUR] ...")` trong `ai-service/face_model.py` — log blur mọi frame. Có thể giữ hoặc xóa tùy ý.
-- Tất cả `logger.debug()` trong `enrollment.py` đã đổi sang `logger.warning()` để xuất hiện trong log (log level mặc định = WARNING=30, debug bị ignore)
-
----
-
-#### 5. ✅ yaw/pitch debug display trên Frontend
-
-**File:** `frontend/src/app/students/enroll/page.tsx`
-- Video element: `style={{ transform: "scaleX(-1)" }}` — mirror để UX tự nhiên
-- State `lastQuality` mở rộng: `{blur, det, yaw, pitch}`
-- Debug line hiển thị: `blur: 42, det: 0.97, yaw: -5.3°, pitch: 2.1°`
-- Dùng để verify thresholds POSE_STEP_CONFIG chính xác
-
----
-
-#### 6. ✅ Rebuild & Deploy
-
-```bash
-docker-compose up -d --build ai-service backend
-```
-
-**Trạng thái sau rebuild:**
-- `ai-service`: geometric pose method, blur logging
-- `backend`: POSE_STEP_CONFIG mới, MIN_BLUR=0, logger.warning
-- `frontend`: 401 detection, mirror video, yaw/pitch debug
-
-**⏳ Chờ verify:** User cần thử enrollment và xem debug line để confirm yaw/pitch có hợp lý không (neutral ≈ 0°, 0°). Nếu thresholds cần điều chỉnh thêm → sửa POSE_STEP_CONFIG rồi `docker-compose up -d --build backend`.
-
----
-
-## 📊 Trạng thái hiện tại (Cập nhật 2026-03-02 phần 5)
-
-| Component | Status | Ghi chú |
-|---|---|---|
-| Backend API | ✅ Hoạt động | POSE_STEP_CONFIG geometric, MIN_BLUR=20.0, CORS restricted, Rate Limit Redis |
-| **AI Face Service** | ✅ Hoạt động | Geometric pose method, không còn solvePnP |
-| PostgreSQL | ✅ Hoạt động | Có test data |
-| Redis | ✅ Hoạt động | Enrollment sessions (TTL 30') + Rate limiting |
-| Frontend | ✅ Build thành công | Mirror video, 401 detection, yaw/pitch debug |
-| **Student CRUD UI** | ✅ Hoàn chỉnh | Add modal, Edit, Soft-delete, Activate, Show inactive |
-| **Face Enrollment UI** | ✅ Hoàn chỉnh | Student picker dropdown (FSBxxx search), auto-select từ URL |
-| **Student ID auto-gen** | ✅ Hoàn chỉnh | Format FSB001, FSB002… (tự tăng, có thể override) |
-| JWT Auth | ✅ Fixed | Key cố định + dual-key decode |
-| **CORS** | ✅ Fixed | `ALLOWED_ORIGINS` configurable via `.env`, không còn `"*"` |
-| **Rate Limiter** | ✅ Fixed | Redis-backed fixed window, fail-open khi Redis down |
-| Face Enrollment | ⚠️ Cần test | Geometric pose fix + MIN_BLUR=20 deployed, chờ user verify |
-| Face Identify | ✅ Refactored | AES decrypt local → ai-service /identify |
-| WebSocket | ✅ Fixed | prefix /ws, broadcast attendance |
-| Attendance REST | ✅ Tested | POST + GET hoạt động |
-| Edge Device | ⚠️ Code ready | Cần hardware để test |
-| Alembic Migrations | ❌ Chưa | Vẫn dùng `create_all` tạm |
-
----
-
-## 🔜 Việc cần làm tiếp theo (theo thứ tự ưu tiên)
-
-### Ưu tiên cao — Cần làm NGAY
-
-1. **Flash lại ESP8266** với firmware mới:
-   - Bỏ thư viện `WebSocketsClient` và `ArduinoJson` (không dùng nữa)
-   - Thêm `ESP8266WebServer` (có sẵn trong esp8266 core)
-   - Đổi LED đỏ từ D3/GPIO0 → **D6/GPIO12** (GPIO0 là boot pin, bị kéo LOW → spike flash mode)
-   - Nhập IP ESP8266 vào ô **ESP8266 Door URL** trên trang Devices
-
-2. **Fix magnet overheating** (chọn 1):
-   - **Option A** (đơn giản): Thêm resistor **33Ω 5W** nối tiếp giữa relay NO và Magnet(-)
-   - **Option B** (tối ưu): Dùng MOSFET IRLZ44N + diode 1N4007, set `RELAY_MODE false` trong firmware
-
-3. **Test end-to-end hoàn chỉnh**:
-   - Vào `/devices` → nhấn **"Mở Kiosk"** (lưu token + ESP URL vào localStorage)
-   - Đứng trước camera → LED đỏ nhấp nháy → LED xanh + relay click = thành công
-   - Nhấn exit button → relay mở 3s
-
-### Ưu tiên trung bình
-
-4. **Cải thiện nhận diện trên Pi** — Camera góc rộng hơn, tắt liveness challenge mặc định, tăng exposure.
-
-5. **Test Bulk-sync offline** — Stop backend → edge ghi SQLite queue → Start lại → xác nhận sync thành công.
-
-6. **Watchdog cho edge container** — Tự restart khi crash, health check camera.
-
-### Ưu tiên thấp / Dài hạn
-
-7. **AWS Deployment** — EC2 + RDS + ElastiCache + ECR/ECS + CloudFront + ALB + HTTPS
-
-8. **Mobile App** — React Native cho admin và sinh viên
-
-9. **Advanced Analytics** — Báo cáo tỷ lệ chuyên cần, export Excel/PDF
-
-10. **RFID backup** — Dự phòng khi face recognition fail liên tiếp
-
----
-
-## 🔧 Các lệnh hữu ích
-
-```bash
-# Xem logs backend real-time
-docker-compose logs -f backend
-
-# Vào container backend (debug)
-docker exec -it smart-attendance-aiot-backend-1 bash
-
-# Chạy query DB trực tiếp
-docker exec -it smart-attendance-aiot-postgres-1 psql -U doanbac07 -d attendance_db
-
-# Xem tất cả sinh viên
-# (trong psql): SELECT id, student_code, full_name, class_id FROM students;
-
-# Xem tất cả thiết bị
-# (trong psql): SELECT id, device_name, device_token, status FROM devices;
-
-# Flush Redis cache
-docker exec -it smart-attendance-aiot-redis-1 redis-cli FLUSHALL
-
-# Xem enrollment session trong Redis (debug)
-docker exec -it smart-attendance-aiot-redis-1 redis-cli KEYS "enrollment:*"
-docker exec -it smart-attendance-aiot-redis-1 redis-cli GET "enrollment:1"
-
-# Test health endpoint
-curl http://localhost:8000/health
-
-# Test login
-curl -X POST http://localhost:8000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@school.com","password":"Admin@123"}'
-
-# Swagger UI
-# Mở http://localhost:8000/docs
-
-# Rebuild sau thay đổi code
-docker-compose up -d --build backend
-docker-compose up -d --build frontend
-docker-compose up -d --build backend frontend
-```
-
----
-
-## 📚 Tài liệu tham khảo
-
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [InsightFace GitHub](https://github.com/deepinsight/insightface)
-- [SQLAlchemy Async ORM](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html)
-- [Next.js App Router](https://nextjs.org/docs/app)
-- [Pydantic v2 Migration](https://docs.pydantic.dev/latest/migration/)
-- [Paper_v2.md](./Paper_v2.md) — Tài liệu nghiên cứu & thiết kế hệ thống chi tiết
-
----
-
-*Cập nhật lần cuối: 2026-03-02 (phần 4) — Student CRUD hoàn chỉnh: Add modal (FSBxxx auto-gen), Edit inline, Soft-deactivate/Activate, Show inactive toggle. Backend: generate_student_code(), PATCH /deactivate, PATCH /activate, GET ?include_inactive.*
-
----
-
-### Session 2026-03-02 (phần 5) — Face Enrollment UI fix + CORS + Rate Limiter Redis
-
-#### 1. ✅ Fix Face Enrollment page — Student Picker Dropdown
-
-**Vấn đề:** Input `type="number"` block gõ chữ (FSB001). Không có dropdown chọn sinh viên — admin phải gõ DB ID số thủ công.
-
-**Fix:**
-- Bỏ `type="number"` input. Thay bằng **searchable student combobox**
-- Fetch `GET /api/students/?include_inactive=false` khi mount → load danh sách students
-- Gõ tìm theo tên hoặc mã FSBxxx → dropdown lọc realtime
-- Khi chọn: hiện chip `FSB001 — Nguyen Van A` với nút × để đổi
-- Internal lưu `selectedStudent.id` (integer DB id) → truyền vào API đúng format
-- Auto-select khi đến từ `?student_id=X` URL param (từ student detail page)
-- Thêm **per-row "Enroll" button** (màu tím) trong bảng `students/page.tsx` → link thẳng đến enrollment với student đó đã pre-selected
-- Success message hiện `FSB001 — Nguyen Van A` thay vì `student #5`
-- Cảnh báo `⚠️ Already has face data — will be overwritten` nếu student đã có face
-
-#### 2. ✅ Restore MIN_BLUR_ENROLLMENT = 20.0
-
-Trước đó đặt `0.0` để debug (bỏ qua blur check). Đã restore về `20.0` (Laplacian variance threshold — loại bỏ frame bị blur/motion blur).
-
-#### 3. ✅ CORS — Configurable via settings
-
-**Trước:** `allow_origins=["*"]` hardcode trong `main.py` — không an toàn, không configurable.
-
-**Sau:**
-- `config.py`: `ALLOWED_ORIGINS: List[str]` với validator hỗ trợ JSON string từ `.env`
-- `main.py`: `allow_origins=settings.ALLOWED_ORIGINS`
-- `.env`: `ALLOWED_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]`
-- Production: thêm domain thật vào `.env`, rebuild backend
-
-**Verify:**
-```bash
-# Origin hợp lệ → trả access-control-allow-origin header
-curl -I -H "Origin: http://localhost:3000" -X OPTIONS http://localhost:8000/api/students/
-# → access-control-allow-origin: http://localhost:3000 ✅
-
-# Origin lạ → không có header → bị block
-curl -I -H "Origin: http://evil.com" -X OPTIONS http://localhost:8000/api/students/
-# → (trống) ✅
-```
-
-#### 4. ✅ Rate Limiter — Redis-backed (bỏ in-memory dict)
-
-**Trước:** `rate_limiter.py` dùng `defaultdict(list)` in-memory → bị mất khi restart, không shared giữa multiple instances.
-
-**Sau — Fixed window với Redis:**
-```
-Key:   rate_limit:{client_ip}:{unix_epoch // period}
-Value: INCR counter (atomic)
-TTL:   period × 2 (auto-expire sau 2 windows)
-```
-
-**Tính năng:**
-- `Retry-After` header trả về số giây còn lại đến khi window mới
-- **Fail-open**: nếu Redis down → request được phép qua (không block traffic hợp lệ), log warning
-- WebSocket upgrade vẫn bỏ qua (không thể handle bằng BaseHTTPMiddleware)
-- Rate limit shared giữa tất cả uvicorn workers
-
-**Redis key verify sau rebuild:**
-```bash
-docker exec smart-attendance-aiot-redis-1 redis-cli KEYS "rate_limit:*"
-# → rate_limit:xxx.xxx.xxx.xxx:29540870 ✅
-```
-
-#### 5. ✅ Rebuild & Deploy
-
-```bash
-docker-compose up -d --build backend
-```
-
-Tất cả containers healthy. Backend version 1.0.0 running trên port 8000.
-
----
-
-### Session 2026-03-04 — Raspberry Pi Deployment + ESP8266 Door Controller + Kiosk Security
-
-#### 1. ✅ Raspberry Pi Edge Deployment
-
-- Build Docker image trên Pi (ARM64) thành công sau khi fix `onnxruntime` → `onnxruntime-aarch64`
-- Fix `AES_KEY` không load đúng trong `.env` trên Pi
-- Embedding sinh viên id=3 "Do Doan Bac" sync thành công: `Loaded 1 embeddings into cache`
-- Camera hoạt động sau reboot: `Camera opened. Recognition loop running...`
-
-#### 2. ✅ Web Kiosk Camera Fix (Pi Browser)
-
-**Vấn đề:** Camera hiển thị black screen trên Chromium Pi, bị kẹt ở "Đang khởi động camera…"
-
-**Nguyên nhân:**
-- `facingMode: "user"` constraint fail trên Pi Linux
-- `oncanplay` event không fire → stuck loading
-- Edge Docker container giữ `/dev/video0`
-
-**Fix:**
-- Bỏ `facingMode`, relaxed constraints (640×480 trước)
-- Thêm `enumerateDevices()` để pin device ID
-- Gọi `setCamReady(true)` ngay sau `play()`, không đợi `oncanplay`
-- Stop edge container để camera free
-
-#### 3. ✅ ESP8266 Door Controller — Kiến trúc Web Server
-
-**Thiết kế cũ (bỏ):** ESP8266 kết nối WebSocket về backend → bị phụ thuộc vào `class_id` hardcode, không linh hoạt đa thiết bị.
-
-**Thiết kế mới:** Backend → HTTP → ESP8266 (web server mode)
-
-```
-Kiosk Browser (cùng LAN với ESP8266)
-    ├── POST /api/attendance/verify-face ──► Backend (Docker)
-    └── POST http://<ESP_IP>/door/scan|open|deny  ◄── Browser gọi trực tiếp
-```
-
-**Tại sao browser gọi ESP8266, không phải backend?**
-Docker container trên Mac bị isolate network → không reach được IP LAN của ESP8266. Browser cùng mạng WiFi → gọi trực tiếp được.
-
-**ESP8266 endpoints:**
-- `POST /door/scan` → LED đỏ nhấp nháy (đang nhận diện)
-- `POST /door/open` → LED xanh + relay mở 3s + 1 beep
-- `POST /door/deny` → LED đỏ nháy nhanh 2s + 3 beep
-- CORS headers thêm vào để browser gọi được (cross-origin)
-
-**GPIO mapping:**
-```
-D1 (GPIO5)  → RELAY
-D2 (GPIO4)  → LED_GREEN
-D6 (GPIO12) → LED_RED  ← đổi từ D3/GPIO0 (boot pin)
-D4 (GPIO2)  → BUZZER
-D5 (GPIO14) → BUTTON (exit, INPUT_PULLUP)
-```
-
-**Libraries:** Chỉ cần `ESP8266WiFi`, `ESP8266WebServer`, `ESP8266HTTPClient` (tất cả bundled với esp8266 core — không cần cài thêm)
-
-**Multi-device setup (linh hoạt):**
-```
-devices table:
-  device 1 → class_id=5, esp8266_url=http://192.168.1.50
-  device 2 → class_id=7, esp8266_url=http://192.168.1.51
-```
-Flash cùng 1 firmware, nhập IP vào Devices page → tự route đúng.
-
-#### 4. ✅ Kiosk Token Security — Không để token trong URL
-
-**Cũ:** `/kiosk/5?token=1e1bc454...` → token lộ trong URL, browser history, server log.
-
-**Mới:**
-- **Devices page**: nút "Mở Kiosk" → `localStorage.setItem("kiosk_token_5", token)` + `localStorage.setItem("kiosk_esp_5", espUrl)` → mở tab `/kiosk/5` (URL sạch)
-- **Kiosk page**: đọc token từ `localStorage` thay vì `useSearchParams`
-- Nếu localStorage trống → hiện màn hình hướng dẫn admin vào Devices page nhấn "Mở Kiosk"
-
-#### 5. ✅ Backend `POST /api/devices/exit` Endpoint
-
-ESP8266 nhấn exit button → gọi backend để log event + broadcast WS cho dashboard.
-```
-POST /api/devices/exit
-Header: X-Device-Token: <token>
-Body: {}
-```
-
-#### 6. 🔧 Lưu ý Hardware
-
-- **GPIO0 (D3) là boot pin** — nếu LED kéo xuống LOW lúc reset → ESP vào flash mode, Serial Monitor trắng tinh. Dùng **D6/GPIO12** thay thế.
-- **Magnet electromagnet nóng** khi giữ liên tục: thêm resistor 33Ω 5W nối tiếp để giảm dòng.
-- **GND isolation**: DO NOT bridge 12V GND với ESP8266 GND — relay có optocoupler cách ly.
-
-#### 7. ✅ Rebuild & Deploy
-
-```bash
-docker compose build backend frontend && docker compose up -d backend frontend
-```
-
-Tất cả containers healthy.
+- [InsightFace buffalo_sc models](https://huggingface.co/deepinsight/insightface)
+- [SQLAlchemy 2.0 Async](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html)
+- [Next.js 14 App Router](https://nextjs.org/docs/app)
+- [ONNX Runtime Python API](https://onnxruntime.ai/docs/api/python/)
+- [Paper_v2.md](./Paper_v2.md) — Tài liệu nghiên cứu & thiết kế chi tiết

@@ -19,5 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . /app/edge/
 
 ENV PYTHONPATH=/app
+# Suppress ONNX Runtime C++ verbosity (log level 3 = ERROR only)
+ENV ORT_LOG_LEVEL=3
 
 CMD ["python", "-m", "edge.src.main"]

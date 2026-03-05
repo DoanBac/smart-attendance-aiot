@@ -22,8 +22,9 @@ OUTPUT_SIZE = 112
 def align_face(frame: np.ndarray, landmarks_5: List[List[int]]) -> np.ndarray:
     """Similarity transform from 5 landmarks to ArcFace 112x112. Returns aligned BGR crop."""
     src = np.array(landmarks_5, dtype=np.float32)
+    # LMEDS: deterministic (no random seed unlike RANSAC), robust to landmark outliers
     M, _ = cv2.estimateAffinePartial2D(
-        src, ARCFACE_DST, method=cv2.RANSAC, ransacReprojThreshold=2.0
+        src, ARCFACE_DST, method=cv2.LMEDS
     )
     if M is None:
         cx = int(np.mean(src[:, 0])); cy = int(np.mean(src[:, 1]))
@@ -31,7 +32,7 @@ def align_face(frame: np.ndarray, landmarks_5: List[List[int]]) -> np.ndarray:
         x1 = max(0, cx - half); y1 = max(0, cy - half)
         x2 = min(w, cx + half); y2 = min(h, cy + half)
         return cv2.resize(frame[y1:y2, x1:x2], (OUTPUT_SIZE, OUTPUT_SIZE))
-    return cv2.warpAffine(frame, M, (OUTPUT_SIZE, OUTPUT_SIZE), borderMode=cv2.BORDER_REFLECT)
+    return cv2.warpAffine(frame, M, (OUTPUT_SIZE, OUTPUT_SIZE), borderValue=0.0)
 
 
 def enhance_image(img: np.ndarray) -> np.ndarray:
