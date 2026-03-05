@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard, Users, BookOpen, ClipboardList,
   Monitor, BarChart2, LogOut,
@@ -19,11 +19,28 @@ const NAV_ITEMS = [
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [authorized, setAuthorized] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
-    if (!token) router.push("/login");
+    if (!token) {
+      router.replace("/login");
+    } else {
+      setAuthorized(true);
+    }
   }, [router]);
+
+  // Không render gì cho đến khi xác nhận có token — tránh flash nội dung
+  if (!authorized) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="text-center">
+          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-sm text-gray-500">Đang kiểm tra đăng nhập...</p>
+        </div>
+      </div>
+    );
+  }
 
   const handleLogout = () => {
     localStorage.removeItem("access_token");

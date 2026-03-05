@@ -1,11 +1,12 @@
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
+from uuid import UUID
 
 class AttendanceCreate(BaseModel):
-    student_id: int
-    class_id: int
-    device_id: Optional[int] = None
+    student_id: UUID
+    class_id: UUID
+    device_id: Optional[UUID] = None
     timestamp: datetime
     confidence: Optional[float] = None
     liveness_score: Optional[float] = None
@@ -18,10 +19,12 @@ class AttendanceBulkSync(BaseModel):
     device_token: str
 
 class AttendanceResponse(BaseModel):
-    id: int
-    student_id: int
+    id: UUID
+    student_id: UUID
     student_name: Optional[str] = None
-    class_id: int
+    class_id: UUID
+    class_name: Optional[str] = None
+    class_code: Optional[str] = None
     timestamp: datetime
     confidence: Optional[float]
     liveness_score: Optional[float]
@@ -32,7 +35,7 @@ class AttendanceResponse(BaseModel):
         from_attributes = True
 
 class AttendanceReport(BaseModel):
-    class_id: int
+    class_id: UUID
     class_name: str
     total_sessions: int
     student_stats: List[dict]
@@ -40,18 +43,18 @@ class AttendanceReport(BaseModel):
 
 # ── Web Kiosk Verify ─────────────────────────────────────────────────────────
 class VerifyFaceRequest(BaseModel):
-    image_b64: str          # Raw base64 JPEG (đặc không có tiền tố data:image/)
-    class_id: int
+    image_b64: str          # Raw base64 JPEG
+    class_id: UUID
     challenge_dir: Optional[str] = None  # "left" | "right" — pose liveness challenge
 
 
 class VerifyFaceResponse(BaseModel):
     matched: bool
-    student_id: Optional[int] = None
+    student_id: Optional[UUID] = None
     student_name: Optional[str] = None
     student_code: Optional[str] = None
     confidence: float = 0.0
     # "present" | "already_marked" | "unknown" | "no_face" | "error"
     status: str
     message: str
-    attendance_id: Optional[int] = None
+    attendance_id: Optional[UUID] = None

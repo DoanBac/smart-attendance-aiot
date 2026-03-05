@@ -11,6 +11,7 @@ AES key KHÔNG rời khỏi backend process.
 import os
 import base64
 import logging
+from uuid import UUID
 import numpy as np
 from typing import Tuple, List, Optional
 
@@ -169,7 +170,7 @@ class FaceService:
     #  DB helpers (dùng cho attendance route)                           #
     # ---------------------------------------------------------------- #
     async def store_embedding(
-        self, db: AsyncSession, student_id: int, embedding_b64: str
+        self, db: AsyncSession, student_id: UUID, embedding_b64: str
     ) -> bool:
         """Nhận base64 embedding từ ESP32 → encrypt → lưu DB"""
         raw  = base64.b64decode(embedding_b64)
@@ -194,8 +195,8 @@ class FaceService:
         self,
         db:                  AsyncSession,
         query_embedding_b64: str,
-        class_id:            Optional[int] = None,
-    ) -> Tuple[Optional[int], float]:
+        class_id:            Optional[UUID] = None,
+    ) -> Tuple[Optional[UUID], float]:
         """
         So khớp probe embedding (từ Edge) vs gallery trong DB.
         Flow: fetch DB → AES decrypt (local) → POST ai-service /identify
@@ -218,7 +219,7 @@ class FaceService:
             return None, 0.0
 
         # Decrypt embeddings — AES key chỉ trong backend process
-        gallery: List[Tuple[int, np.ndarray]] = []
+        gallery: List[Tuple[UUID, np.ndarray]] = []
         for student in students:
             try:
                 plain = decrypt_embedding(student.face_embedding)
@@ -243,7 +244,8 @@ class FaceService:
             return (best_id if best_score >= threshold else None), best_score
 
         matched    = res["matched"]
-        student_id = res.get("student_id")
+        student_id_raw = res.get("student_id")
+        student_id: Optional[UUID] = UUID(student_id_raw) if student_id_raw else None
         confidence = res.get("confidence", 0.0)
         logger.info(f"[IDENTIFY] matched={matched} sid={student_id} conf={confidence:.4f}")
         return (student_id if matched else None), confidence
@@ -259,7 +261,7 @@ face_service = FaceService()
 # ── Module-level aliases (dùng cho enrollment.py import) ─────────────────────
 async def store_embedding(
     db: "AsyncSession",
-    student_id: int,
+    student_id: "UUID",
     embedding_b64: str
 ) -> bool:
     """Proxy → face_service.store_embedding"""
@@ -269,7 +271,7 @@ async def store_embedding(
 async def identify_face(
     db: "AsyncSession",
     query_embedding_b64: str,
-    class_id: "Optional[int]" = None,
-) -> "Tuple[Optional[int], float]":
+    class_id: "Optional[UUID]" = None,
+) -> "Tuple[Optional[UUID], float]":
     """Proxy → face_service.identify_face"""
     return await face_service.identify_face(db, query_embedding_b64, class_id)

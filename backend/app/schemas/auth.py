@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
+from uuid import UUID
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -20,7 +21,7 @@ class AdminCreate(BaseModel):
     role: str = "admin"
 
 class AdminResponse(BaseModel):
-    id: int
+    id: UUID
     email: str
     full_name: str
     role: str

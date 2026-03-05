@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import uuid as _uuid
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import OAuth2PasswordBearer
@@ -53,7 +54,7 @@ async def get_current_admin(
         logger.error(f"Token decode error: {e}")
         raise credentials_exc
 
-    result = await db.execute(select(Admin).where(Admin.id == int(admin_id)))
+    result = await db.execute(select(Admin).where(Admin.id == _uuid.UUID(admin_id)))
     admin = result.scalar_one_or_none()
 
     if not admin:

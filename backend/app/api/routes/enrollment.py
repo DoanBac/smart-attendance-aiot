@@ -13,6 +13,7 @@ from app.core.security import get_current_admin
 from app.core.redis_client import get_redis
 from app.schemas.student import EmbeddingUpload
 from app.services.face_service import store_embedding, identify_face, face_service
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -86,7 +87,7 @@ POSE_STEP_CONFIG = [
 ]
 
 
-def _redis_key(student_id: int) -> str:
+def _redis_key(student_id: UUID) -> str:
     return f"enrollment:{student_id}"
 
 
@@ -127,13 +128,13 @@ def _check_pose(meta: dict, step_index: int) -> Tuple[bool, str]:
 
 
 class CaptureFrameRequest(BaseModel):
-    student_id: int
+    student_id: UUID
     frame_b64: str          # raw base64 JPEG (no data:image prefix)
     step_index: int
 
 
 class FinalizeRequest(BaseModel):
-    student_id: int
+    student_id: UUID
 
 
 @router.post("/capture-frame", response_model=dict)
@@ -298,7 +299,7 @@ async def upload_embedding(
 @router.post("/identify", response_model=dict)
 async def identify(
     data: EmbeddingUpload,
-    class_id: int = None,
+    class_id: UUID = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Cloud-side identification (used when Edge cannot match locally)."""

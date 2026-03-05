@@ -1,18 +1,19 @@
 from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional
 from datetime import datetime
+from uuid import UUID
 
 
 class DeviceRegister(BaseModel):
     device_name: str
     location: Optional[str] = None
-    class_id: Optional[int] = None
+    class_id: Optional[UUID] = None
 
 
 class DeviceUpdate(BaseModel):
     device_name: Optional[str] = None
     location: Optional[str] = None
-    class_id: Optional[int] = None
+    class_id: Optional[UUID] = None
     esp8266_url: Optional[str] = None
 
 
@@ -31,10 +32,10 @@ class DeviceResponse(BaseModel):
         from_attributes=True,
     )
 
-    id: int
+    id: UUID
     device_name: Optional[str] = None
     device_token: str
-    class_id: Optional[int] = None
+    class_id: Optional[UUID] = None
     ip_address: Optional[str] = None
     location: Optional[str] = None
     firmware_version: Optional[str] = None

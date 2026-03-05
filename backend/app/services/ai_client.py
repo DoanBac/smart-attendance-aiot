@@ -89,7 +89,7 @@ async def ai_extract_embedding(
 
 async def ai_identify(
     probe: np.ndarray,
-    gallery: List[Tuple[int, np.ndarray]],   # (student_id, plain_embedding)
+    gallery: List[Tuple],   # (student_id: any, plain_embedding: np.ndarray)
     threshold: Optional[float] = None,
 ) -> dict:
     """
@@ -103,7 +103,7 @@ async def ai_identify(
     dict: { matched, student_id, confidence, top_matches }
     """
     gallery_items = [
-        {"student_id": sid, "embedding_b64": _emb_to_b64(emb)}
+        {"student_id": str(sid), "embedding_b64": _emb_to_b64(emb)}
         for sid, emb in gallery
     ]
 

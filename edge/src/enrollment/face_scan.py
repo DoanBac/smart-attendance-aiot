@@ -10,18 +10,18 @@ from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 
 from edge.src.ai.face_detection import FaceDetector
-from edge.src.ai.face_alignment import align_face, enhance_image
+from edge.src.ai.face_alignment import align_face
 from edge.src.ai.face_embedding import FaceEmbedder
 
 logger = logging.getLogger(__name__)
 
 POSE_STEPS = [
-    {"name": "Nhìn thẳng",       "yaw_range": (-10, 10),  "pitch_range": (-10, 10)},
-    {"name": "Quay trái nhẹ",    "yaw_range": (-30, -15), "pitch_range": (-15, 15)},
-    {"name": "Quay phải nhẹ",    "yaw_range": (15, 30),   "pitch_range": (-15, 15)},
-    {"name": "Ngẩng đầu nhẹ",    "yaw_range": (-10, 10),  "pitch_range": (-25, -10)},
-    {"name": "Cúi đầu nhẹ",      "yaw_range": (-10, 10),  "pitch_range": (10, 25)},
-    {"name": "Nhìn thẳng (xác nhận)", "yaw_range": (-8, 8), "pitch_range": (-8, 8)},
+    {"name": "Look straight at the camera"},
+    {"name": "Turn head slightly left"},
+    {"name": "Turn head slightly right"},
+    {"name": "Tilt head slightly up"},
+    {"name": "Tilt head slightly down"},
+    {"name": "Look straight (confirm)"},
 ]
 
 @dataclass
@@ -43,7 +43,7 @@ def face_area_ratio(bbox, frame_shape) -> float:
     return face_area / frame_area
 
 class FaceEnrollment:
-    FRAMES_PER_STEP = 8    # Collect up to 8 quality frames per pose step
+    FRAMES_PER_STEP = 5    # 5 quality frames per pose step (no angle check)
     MIN_BLUR = 100.0
     MIN_FACE_RATIO = 0.08
     MIN_LANDMARK_CONF = 0.7
@@ -62,7 +62,7 @@ class FaceEnrollment:
         for step_idx, step in enumerate(POSE_STEPS):
             step_frames = 0
             step_start = time.time()
-            timeout = 10.0  # 10 seconds per pose step
+            timeout = 8.0   # 8 seconds per step
 
             logger.info(f"[Enrollment] Step {step_idx + 1}/{len(POSE_STEPS)}: {step['name']}")
 
@@ -92,7 +92,6 @@ class FaceEnrollment:
                     continue
 
                 aligned = align_face(frame, face["landmarks"])
-                aligned = enhance_image(aligned)
 
                 if blur_score(aligned) < self.MIN_BLUR:
                     continue
@@ -110,7 +109,7 @@ class FaceEnrollment:
                     error=f"No quality frames collected for step: {step['name']}"
                 )
 
-        if len(all_embeddings) < 10:
+        if len(all_embeddings) < 5:
             return EnrollmentResult(
                 success=False,
                 student_id=student_id,

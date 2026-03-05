@@ -9,7 +9,9 @@ load_dotenv("/app/config/device.env")
 class EdgeConfig:
     # Device identity
     DEVICE_TOKEN: str           = os.getenv("DEVICE_TOKEN", "")
-    CLASS_ID: int               = int(os.getenv("CLASS_ID", "1"))
+    CLASS_ID: str               = os.getenv("CLASS_ID", "")
+    CLASS_NAME: str             = os.getenv("CLASS_NAME", "Lớp học")   # tên lớp hiển thị trên kiosk
+    DEVICE_NAME: str            = os.getenv("DEVICE_NAME", "Pi Edge")  # tên thiết bị hiển thị trên kiosk
 
     # Cloud API
     CLOUD_API_URL: str          = os.getenv("CLOUD_API_URL", "https://api.example.com")

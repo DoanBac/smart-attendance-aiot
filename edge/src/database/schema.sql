@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS local_embeddings (
 CREATE TABLE IF NOT EXISTS offline_queue (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     student_id     INTEGER NOT NULL,
-    class_id       INTEGER NOT NULL,
+    class_id       TEXT NOT NULL,
     timestamp      TEXT    NOT NULL,       -- ISO-8601 UTC
     confidence     REAL,
     liveness_score REAL,

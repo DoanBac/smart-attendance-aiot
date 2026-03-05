@@ -13,7 +13,7 @@ import {
 // ─────────────────────────── Types ───────────────────────────────────────────
 type ScanStatus =
   | "idle" | "scanning"
-  | "success" | "already" | "unknown" | "no_face" | "liveness_failed" | "error";
+  | "success" | "already" | "unknown" | "no_face" | "liveness_failed" | "error" | "wrong_class";
 
 interface ScanResult {
   matched: boolean;
@@ -54,7 +54,7 @@ const STATUS_CFG: Record<string, StatusCfg> = {
     ovalBorder: "border-blue-400 shadow-[0_0_50px_14px_rgba(96,165,250,0.40)]",
     textColor: "text-blue-300",
     icon     : <CheckCircle className="w-14 h-14 sm:w-20 sm:h-20 text-blue-400 drop-shadow-lg" />,
-    title    : "Đã điểm danh",
+    title    : "Already Checked In",
   },
   unknown: {
     gradient : "from-red-900/75 to-red-950/85",
@@ -62,7 +62,7 @@ const STATUS_CFG: Record<string, StatusCfg> = {
     ovalBorder: "border-red-400 shadow-[0_0_50px_14px_rgba(248,113,113,0.40)]",
     textColor: "text-red-300",
     icon     : <XCircle className="w-14 h-14 sm:w-20 sm:h-20 text-red-400 drop-shadow-lg" />,
-    title    : "Không nhận ra",
+    title    : "Not Recognized",
   },
   no_face: {
     gradient : "from-yellow-900/65 to-yellow-950/75",
@@ -70,7 +70,7 @@ const STATUS_CFG: Record<string, StatusCfg> = {
     ovalBorder: "border-yellow-400 shadow-[0_0_50px_14px_rgba(250,204,21,0.35)]",
     textColor: "text-yellow-300",
     icon     : <AlertTriangle className="w-14 h-14 sm:w-20 sm:h-20 text-yellow-400 drop-shadow-lg" />,
-    title    : "Không thấy mặt",
+    title    : "No Face Detected",
   },
   liveness_failed: {
     gradient : "from-orange-900/75 to-orange-950/85",
@@ -78,7 +78,7 @@ const STATUS_CFG: Record<string, StatusCfg> = {
     ovalBorder: "border-orange-400 shadow-[0_0_50px_14px_rgba(251,146,60,0.40)]",
     textColor: "text-orange-300",
     icon     : <ShieldAlert className="w-14 h-14 sm:w-20 sm:h-20 text-orange-400 drop-shadow-lg" />,
-    title    : "Ảnh giả!",
+    title    : "Spoofing Detected!",
   },
   error: {
     gradient : "from-gray-800/70 to-gray-950/80",
@@ -86,40 +86,71 @@ const STATUS_CFG: Record<string, StatusCfg> = {
     ovalBorder: "border-gray-500",
     textColor: "text-gray-300",
     icon     : <XCircle className="w-14 h-14 sm:w-20 sm:h-20 text-gray-400 drop-shadow-lg" />,
-    title    : "Lỗi",
+    title    : "Error",
+  },
+  wrong_class: {
+    gradient : "from-purple-900/75 to-purple-950/85",
+    border   : "border-purple-400",
+    ovalBorder: "border-purple-400 shadow-[0_0_50px_14px_rgba(192,132,252,0.40)]",
+    textColor: "text-purple-300",
+    icon     : <AlertTriangle className="w-14 h-14 sm:w-20 sm:h-20 text-purple-400 drop-shadow-lg" />,
+    title    : "Wrong Class",
   },
 };
 
 // ─────────────────────────── Main component ───────────────────────────────────
-function KioskInner({ classId }: { classId: string }) {
+function KioskInner({ classId: classCode }: { classId: string }) {
   // Token + ESP8266 URL stored in localStorage by Devices admin page — never in the URL
   const [token, setToken] = useState("");
   const [espUrl, setEspUrl] = useState("");
   const [tokenLoaded, setTokenLoaded] = useState(false);
+  const [numericClassId, setNumericClassId] = useState<number | null>(null);
+  const [className, setClassName] = useState("");
 
   useEffect(() => {
-    setToken(localStorage.getItem(`kiosk_token_${classId}`) ?? "");
-    setEspUrl(localStorage.getItem(`kiosk_esp_${classId}`) ?? "");
+    const tok = localStorage.getItem(`kiosk_token_${classCode}`) ?? "";
+    const esp = localStorage.getItem(`kiosk_esp_${classCode}`) ?? "";
+    setToken(tok);
+    setEspUrl(esp);
     setTokenLoaded(true);
-  }, [classId]);
+    // Resolve class_code → numeric id + name using device token (no admin JWT needed)
+    if (tok) {
+      fetch(`${getApiBase()}/api/classes/by-code/${classCode}`, {
+        headers: { "X-Device-Token": tok },
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.id) { setNumericClassId(d.id); setClassName(d.class_name); }
+        })
+        .catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classCode]);
 
   // Fire-and-forget call to ESP8266 from browser (same LAN, no Docker isolation)
+  // Intentionally silent — Mixed Content block on HTTPS is expected and harmless
   const notifyEsp = useCallback((path: string) => {
     if (!espUrl) return;
-    fetch(`${espUrl.replace(/\/$/, "")}${path}`, { method: "POST" }).catch(() => {});
+    try {
+      fetch(`${espUrl.replace(/\/$/, "")}${path}`, { method: "POST" }).catch(() => {});
+    } catch { /* Mixed Content or network error — ignore */ }
   }, [espUrl]);
 
   const videoRef    = useRef<HTMLVideoElement>(null);
   const canvasRef   = useRef<HTMLCanvasElement>(null);
+  // Edge stream fallback (when getUserMedia fails — edge container holds the camera)
+  const [edgeStreamUrl, setEdgeStreamUrl] = useState<string>("");
+  // When true, edge video/snapshot is fetched through the FastAPI backend proxy (for HTTPS kiosk pages)
+  const [backendProxyMode, setBackendProxyMode] = useState(false);
 
   const [camReady, setCamReady]   = useState(false);
   const [camError, setCamError]   = useState<string | null>(null);
   const [scanStatus, setScan]     = useState<ScanStatus>("idle");
   const [result, setResult]       = useState<ScanResult | null>(null);
-  const [autoScan, setAutoScan]   = useState(true);
+  const [autoScan, setAutoScan]   = useState(false);
   const [countdown, setCountdown] = useState(AUTO_SCAN_SEC);
   const [online, setOnline]           = useState(true);
-  const [challengeEnabled, setChallenge_enabled] = useState(true);
+  const [challengeEnabled, setChallenge_enabled] = useState(false);
   // Random pose challenge — re-randomised every idle reset
   const [challenge, setChallenge] = useState<"left" | "right">(randomChallenge);
 
@@ -189,7 +220,51 @@ function KioskInner({ classId }: { classId: string }) {
       }
 
       if (cancelled) { stream?.getTracks().forEach((t) => t.stop()); return; }
-      if (!stream)   { setCamError("Không thể truy cập camera.\nKiểm tra quyền camera trong trình duyệt."); return; }
+
+      if (!stream) {
+        // getUserMedia failed — try edge MJPEG stream (edge container holds the camera)
+        const isHttps = window.location.protocol === "https:";
+
+        if (isHttps) {
+          // On HTTPS: direct HTTP probe is blocked by Mixed Content.
+          // Use the FastAPI backend as an HTTPS proxy to the edge device.
+          const tok = localStorage.getItem(`kiosk_token_${classCode}`) ?? "";
+          if (tok) {
+            try {
+              const probe = await fetch(
+                `${base}/api/devices/by-class/${classCode}/edge-snapshot`,
+                { headers: { "X-Device-Token": tok } },
+              );
+              if (probe.ok) {
+                if (!cancelled) {
+                  setEdgeStreamUrl("proxy");
+                  setBackendProxyMode(true);
+                  setCamReady(true);
+                }
+                return;
+              }
+            } catch { /* backend or edge unreachable */ }
+          }
+        } else {
+          // On HTTP (local LAN): probe the edge container directly
+          try {
+            const edgeBase = `http://${window.location.hostname}:5000`;
+            const probe = await fetch(`${edgeBase}/snapshot`, {
+              signal: AbortSignal.timeout ? AbortSignal.timeout(3000) : new AbortController().signal,
+            });
+            if (probe.ok) {
+              if (!cancelled) {
+                setEdgeStreamUrl(edgeBase);
+                setCamReady(true);
+              }
+              return;
+            }
+          } catch { /* edge not available */ }
+        }
+
+        setCamError("Cannot access camera.\nCheck camera permissions in your browser.\n\nIf using edge device, ensure edge container is running at port 5000.");
+        return;
+      }
 
       if (videoRef.current) {
         const video = videoRef.current;
@@ -209,7 +284,16 @@ function KioskInner({ classId }: { classId: string }) {
   // ── Scan: capture single frame → backend (ML liveness handled server-side) ───
   const doScan = useCallback(async () => {
     if (!camReady || scanStatus === "scanning") return;
-    if (!videoRef.current || !canvasRef.current) return;
+    // In browser-camera mode both refs must be ready; edge mode skips video element
+    if (!edgeStreamUrl && (!videoRef.current || !canvasRef.current)) return;
+
+    // Guard: class not resolved yet
+    if (numericClassId === null) {
+      setResult({ matched: false, confidence: 0, status: "error",
+        message: "Class not loaded yet — please wait a moment" });
+      setScan("error");
+      return;
+    }
 
     setResult(null);
     setScan("scanning");
@@ -217,25 +301,56 @@ function KioskInner({ classId }: { classId: string }) {
     // ── Notify ESP8266: scan started → red LED blinks ───────────────────────
     notifyEsp("/door/scan");
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    canvas.width  = video.videoWidth  || 1280;
-    canvas.height = video.videoHeight || 720;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) { setScan("error"); return; }
-    ctx.drawImage(video, 0, 0);
-    const image_b64 = canvas.toDataURL("image/jpeg", 0.88).split(",")[1];
+    let image_b64: string;
+
+    if (edgeStreamUrl) {
+      // Edge stream mode: fetch a snapshot JPEG from the edge container
+      try {
+        const snapResp = backendProxyMode
+          ? await fetch(`${base}/api/devices/by-class/${classCode}/edge-snapshot`, {
+              headers: { "X-Device-Token": token },
+            })
+          : await fetch(`${edgeStreamUrl}/snapshot`);
+        if (!snapResp.ok) throw new Error("snapshot fetch failed");
+        const buf = await snapResp.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let binary = "";
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        image_b64 = btoa(binary);
+      } catch {
+        setResult({ matched: false, confidence: 0, status: "error", message: "Cannot reach edge stream" });
+        setScan("error");
+        notifyEsp("/door/deny");
+        return;
+      }
+    } else {
+      // Browser camera mode: draw from video element to canvas
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      canvas.width  = video.videoWidth  || 1280;
+      canvas.height = video.videoHeight || 720;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { setScan("error"); return; }
+      ctx.drawImage(video, 0, 0);
+      image_b64 = canvas.toDataURL("image/jpeg", 0.88).split(",")[1];
+    }
 
     try {
       const resp = await fetch(`${base}/api/attendance/verify-face`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Device-Token": token },
-        body: JSON.stringify({ image_b64, class_id: parseInt(classId), ...(challengeEnabled ? { challenge_dir: challenge } : {}) }),
+        body: JSON.stringify({ image_b64, class_id: numericClassId, ...(challengeEnabled ? { challenge_dir: challenge } : {}) }),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        setResult({ matched: false, confidence: 0, status: "error",
-          message: err.detail ?? `Lỗi server (${resp.status})` });
+        // Pydantic 422 returns detail as array of {type,loc,msg,input}; stringify it
+        const detail = err.detail;
+        const msg: string = typeof detail === "string"
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((e: { msg?: string }) => e.msg ?? JSON.stringify(e)).join("; ")
+            : `Server error (${resp.status})`;
+        setResult({ matched: false, confidence: 0, status: "error", message: msg });
         setScan("error");
         notifyEsp("/door/deny");
         return;
@@ -243,7 +358,6 @@ function KioskInner({ classId }: { classId: string }) {
       const data: ScanResult = await resp.json();
       setResult(data);
 
-      // ── Notify ESP8266: open or deny based on result ─────────────────────
       if (data.status === "present" || data.status === "already_marked") {
         notifyEsp("/door/open");
       } else {
@@ -256,14 +370,15 @@ function KioskInner({ classId }: { classId: string }) {
         : data.status === "unknown"         ? "unknown"
         : data.status === "no_face"         ? "no_face"
         : data.status === "liveness_failed" ? "liveness_failed"
+        : data.status === "wrong_class"     ? "wrong_class"
         : "error"
       );
     } catch {
-      setResult({ matched: false, confidence: 0, status: "error", message: "Mất kết nối server" });
+      setResult({ matched: false, confidence: 0, status: "error", message: "Server connection lost" });
       setScan("error");
       notifyEsp("/door/deny");
     }
-  }, [camReady, scanStatus, base, token, classId, notifyEsp]);
+  }, [camReady, scanStatus, base, token, numericClassId, notifyEsp, edgeStreamUrl, backendProxyMode, classCode, challengeEnabled, challenge]);
 
   // ── Auto-scan state machine ───────────────────────────────────────────────
   useEffect(() => {
@@ -311,13 +426,13 @@ function KioskInner({ classId }: { classId: string }) {
       <div className="fixed inset-0 bg-gray-950 flex items-center justify-center p-8">
         <div className="text-center max-w-sm">
           <AlertTriangle className="w-16 h-16 mx-auto mb-4 text-yellow-400" />
-          <h1 className="text-2xl font-bold text-white mb-3">Kiosk chưa được cấu hình</h1>
+          <h1 className="text-2xl font-bold text-white mb-3">Kiosk Not Configured</h1>
           <p className="text-gray-400 text-sm leading-relaxed">
-            Vào trang <span className="text-blue-400 font-medium">Quản lý Thiết bị</span>,
-            tìm thiết bị của lớp <span className="text-white font-mono">#{classId}</span>
-            và nhấn nút <span className="text-green-400 font-medium">Mở Kiosk</span>.
+            Go to <span className="text-blue-400 font-medium">Device Management</span>,
+            find the device for class <span className="text-white font-mono">{classCode}</span>
+            and click <span className="text-green-400 font-medium">Open Kiosk</span>.
           </p>
-          <p className="text-gray-600 text-xs mt-4">Kiosk sẽ tự kích hoạt trong tab đó.</p>
+          <p className="text-gray-600 text-xs mt-4">The kiosk will activate automatically in that tab.</p>
         </div>
       </div>
     );
@@ -332,7 +447,7 @@ function KioskInner({ classId }: { classId: string }) {
           {camError.split("\n").map((l, i) => <p key={i} className="text-gray-400 text-sm mb-1">{l}</p>)}
           <button onClick={() => window.location.reload()}
             className="mt-5 px-6 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-500 transition-colors">
-            Tải lại trang
+            Reload Page
           </button>
         </div>
       </div>
@@ -343,19 +458,35 @@ function KioskInner({ classId }: { classId: string }) {
   return (
     <div className="fixed inset-0 bg-black overflow-hidden select-none touch-none">
 
-      {/* Video fills entire screen */}
-      <video
-        ref={videoRef}
-        className="absolute inset-0 w-full h-full object-cover"
-        style={{ transform: "scaleX(-1)" }}
-        muted playsInline autoPlay
-      />
+      {/* Video — browser camera OR edge MJPEG stream */}
+      {edgeStreamUrl ? (
+        /* Edge stream mode: MJPEG via direct HTTP (LAN) or backend proxy (HTTPS) */
+        <img
+          src={
+            backendProxyMode
+              ? `${base}/api/devices/by-class/${classCode}/edge-stream?token=${encodeURIComponent(token)}`
+              : `${edgeStreamUrl}/video`
+          }
+          className="absolute inset-0 w-full h-full object-cover"
+          alt="Edge camera stream"
+        />
+      ) : (
+        /* Browser camera mode */
+        <video
+          ref={videoRef}
+          className="absolute inset-0 w-full h-full object-cover"
+          style={{ transform: "scaleX(-1)" }}
+          muted playsInline autoPlay
+        />
+      )}
 
       {/* Camera loading overlay */}
       {!camReady && (
         <div className="absolute inset-0 bg-gray-950 flex flex-col items-center justify-center z-50 gap-3">
           <Loader2 className="w-10 h-10 text-blue-400 animate-spin" />
-          <p className="text-gray-400 text-sm">Đang khởi động camera…</p>
+          <p className="text-gray-400 text-sm">
+            {edgeStreamUrl ? "Connecting to edge stream…" : "Starting camera…"}
+          </p>
         </div>
       )}
 
@@ -371,9 +502,9 @@ function KioskInner({ classId }: { classId: string }) {
       <header className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between px-4 sm:px-8 pt-4 pb-3">
         <div>
           <p className="text-white font-bold text-base sm:text-xl drop-shadow leading-tight">
-            🎓 Điểm Danh Thông Minh
+            🎓 Smart Attendance
           </p>
-          <p className="text-white/45 text-xs mt-0.5">Lớp #{classId}</p>
+          <p className="text-white/45 text-xs mt-0.5">{className || classCode}</p>
         </div>
         <div className="flex items-center gap-2">
           <span className={`flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-black/35 backdrop-blur-sm ${online ? "text-green-400" : "text-red-400"}`}>
@@ -387,11 +518,11 @@ function KioskInner({ classId }: { classId: string }) {
             }`}
           >
             <RefreshCw className={`w-3 h-3 ${autoScan ? "animate-spin" : ""}`} />
-            {autoScan ? "Tự động" : "Thủ công"}
+            {autoScan ? "Auto" : "Manual"}
           </button>
           <button
             onClick={() => setChallenge_enabled((v) => !v)}
-            title={challengeEnabled ? "Tắt yêu cầu xoay mặt" : "Bật yêu cầu xoay mặt"}
+            title={challengeEnabled ? "Disable head-turn challenge" : "Enable head-turn challenge"}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold backdrop-blur-sm transition-all ${
               challengeEnabled ? "bg-amber-500/80 text-white" : "bg-black/45 text-white/45 border border-white/20"
             }`}
@@ -412,14 +543,14 @@ function KioskInner({ classId }: { classId: string }) {
           {!showResult ? (
             <p className="text-white/80 text-xs sm:text-sm font-medium bg-black/30 backdrop-blur-sm px-4 py-1.5 rounded-full text-center">
               {scanStatus === "scanning"
-                ? "⚡ Đang nhận diện…"
+                ? "⚡ Recognizing…"
                 : autoScan
-                  ? `Đặt mặt vào khung · tự quét sau ${countdown}s`
-                  : "Đặt mặt vào khung và nhấn nút bên dưới"}
+                  ? `Position your face · auto-scan in ${countdown}s`
+                  : "Position your face and press the button below"}
             </p>
           ) : (
             <p className="text-white/50 text-xs bg-black/30 backdrop-blur-sm px-4 py-1.5 rounded-full text-center">
-              {autoScan ? `Tự động tiếp tục sau ${Math.ceil(COOLDOWN_MS / 1000)}s…` : "Nhấn nút để quét lại"}
+              {autoScan ? `Auto-continuing in ${Math.ceil(COOLDOWN_MS / 1000)}s…` : "Press the button to scan again"}
             </p>
           )}
         </div>
@@ -433,7 +564,7 @@ function KioskInner({ classId }: { classId: string }) {
               <ArrowRight className="w-7 h-7 text-amber-300 shrink-0" style={{ animation: "pulse 1.2s ease-in-out infinite" }} />
             )}
             <span className="text-amber-200 text-sm font-semibold tracking-wide">
-              {challenge === "left" ? "Quay mặt sang TRÁI" : "Quay mặt sang PHẢI"}
+              {challenge === "left" ? "Turn face to the LEFT" : "Turn face to the RIGHT"}
             </span>
             {challenge === "left" ? (
               <ArrowLeft className="w-7 h-7 text-amber-300 shrink-0" style={{ animation: "pulse 1.2s ease-in-out infinite" }} />
@@ -497,7 +628,7 @@ function KioskInner({ classId }: { classId: string }) {
                     <div className="h-1.5 bg-white/10 rounded-full overflow-hidden w-32 sm:w-44 mx-auto">
                       <div className={`h-full rounded-full ${barColor}`} style={{ width: `${displayPct}%` }} />
                     </div>
-                    <p className="text-white/25 text-xs mt-1">Độ chính xác {displayPct}%</p>
+                    <p className="text-white/25 text-xs mt-1">Confidence {displayPct}%</p>
                   </div>
                 );
               })()}
@@ -509,7 +640,7 @@ function KioskInner({ classId }: { classId: string }) {
       <div className="absolute bottom-0 left-0 right-0 z-20 flex flex-col items-center pb-8 sm:pb-10 px-6 gap-3">
         {!showResult && !isActive && (
           <p className="text-white/25 text-xs text-center">
-            AIoT Smart Attendance · Hãy nhìn thẳng, không dùng ảnh chụp
+            AIoT Smart Attendance · Look straight ahead, do not use photos
           </p>
         )}
         <button
@@ -524,9 +655,9 @@ function KioskInner({ classId }: { classId: string }) {
           `}
         >
           {scanStatus === "scanning" ? (
-            <><Loader2 className="w-5 h-5 animate-spin" /> Đang nhận diện…</>
+            <><Loader2 className="w-5 h-5 animate-spin" /> Recognizing…</>
           ) : (
-            <><Camera className="w-5 h-5" /> Quét khuôn mặt</>
+            <><Camera className="w-5 h-5" /> Scan Face</>
           )}
         </button>
       </div>

@@ -15,6 +15,7 @@ class FaceEmbedder:
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = config.ORT_NUM_THREADS
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        opts.log_severity_level = 3  # Suppress benign shape-mismatch warnings
 
         self.session = ort.InferenceSession(
             model_path,

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from app.config import settings
 from app.database.session import engine
-from app.api.routes import students, classes, attendance, devices, enrollment, auth
+from app.api.routes import students, classes, attendance, devices, enrollment, auth, face
 from app.websocket.attendance_ws import router as ws_router, start_redis_subscriber, stop_redis_subscriber
 from app.core.redis_client import get_redis, close_redis
 from app.api.middleware.rate_limiter import RateLimitMiddleware
@@ -63,6 +63,7 @@ app.include_router(classes.router,    prefix="/api/classes",    tags=["classes"]
 app.include_router(attendance.router, prefix="/api/attendance", tags=["attendance"])
 app.include_router(devices.router,    prefix="/api/devices",    tags=["devices"])
 app.include_router(enrollment.router, prefix="/api/enrollment", tags=["enrollment"])
+app.include_router(face.router,       prefix="/api/face",       tags=["face"])
 
 # WebSocket — prefix /ws agar cocok dengan frontend: ws://host/ws/attendance/{class_id}
 app.include_router(ws_router, prefix="/ws")

@@ -1,14 +1,16 @@
-from sqlalchemy import Column, Integer, Float, String, DateTime, ForeignKey, func
+import uuid
+from sqlalchemy import Column, Float, String, DateTime, ForeignKey, func
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database.session import Base
 
 class Attendance(Base):
     __tablename__ = "attendance"
 
-    id              = Column(Integer, primary_key=True, index=True)
-    student_id      = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
-    class_id        = Column(Integer, ForeignKey("classes.id"), nullable=False, index=True)
-    device_id       = Column(Integer, ForeignKey("devices.id"), nullable=True)
+    id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    student_id      = Column(UUID(as_uuid=True), ForeignKey("students.id"), nullable=False, index=True)
+    class_id        = Column(UUID(as_uuid=True), ForeignKey("classes.id"), nullable=False, index=True)
+    device_id       = Column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=True)
     timestamp       = Column(DateTime, nullable=False, index=True)
     confidence      = Column(Float, nullable=True)   # Cosine similarity score
     liveness_score  = Column(Float, nullable=True)   # Liveness detection score

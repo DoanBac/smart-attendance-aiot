@@ -49,11 +49,11 @@
 #include <WiFiClient.h>
 
 // ─── User configuration ──────────────────────────────────────────────────────
-const char* WIFI_SSID     = "Doan Bac";
-const char* WIFI_PASSWORD = "999999999";
+const char* WIFI_SSID     = "vivo";
+const char* WIFI_PASSWORD = "07032001";
 
 // Backend — for exit button HTTP call only
-const char* BACKEND_HOST  = "192.168.123.134";
+const char* BACKEND_HOST  = "http://10.207.119.160/";
 const int   BACKEND_PORT  = 8000;
 const char* DEVICE_TOKEN  = "1e1bc45444c2439ab40255bd8243148a";
 

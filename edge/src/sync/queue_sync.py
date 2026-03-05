@@ -13,6 +13,7 @@ import numpy as np
 from edge.src.config import config
 from edge.src.database import local_db
 from edge.src.core.encryption import decrypt_embedding
+from edge.src.web.state import shared
 
 logger = logging.getLogger(__name__)
 
@@ -99,18 +100,70 @@ def sync_embeddings_from_cloud():
     except Exception as e:
         logger.error(f"Embedding sync error: {e}")
 
+_ENV_PATH = "/app/config/device.env"
+
+def _write_env_cache(key: str, value: str) -> None:
+    """Update a single KEY=value line in device.env (for offline-boot cache)."""
+    try:
+        try:
+            lines = open(_ENV_PATH).readlines()
+        except FileNotFoundError:
+            lines = []
+
+        updated = False
+        new_lines = []
+        for line in lines:
+            if line.startswith(f"{key}="):
+                new_lines.append(f"{key}={value}\n")
+                updated = True
+            else:
+                new_lines.append(line)
+        if not updated:
+            new_lines.append(f"{key}={value}\n")
+
+        with open(_ENV_PATH, "w") as f:
+            f.writelines(new_lines)
+    except Exception as e:
+        logger.warning(f"Could not update {key} in {_ENV_PATH}: {e}")
+
+
 def send_heartbeat():
     if not _is_online():
         return
     try:
-        requests.post(
+        resp = requests.post(
             f"{config.CLOUD_API_URL}/api/devices/heartbeat",
             json={"status": "active"},
             headers=_headers(),
             timeout=10
         )
-    except Exception:
-        pass
+        if resp.status_code != 200:
+            return
+
+        data = resp.json()
+
+        # Hot-reload class assignment if backend changed it
+        new_class_id   = data.get("class_id")
+        new_class_name = data.get("class_name")
+        new_device_name= data.get("device_name")
+
+        if new_class_id and new_class_id != config.CLASS_ID:
+            logger.info(f"Class assignment changed: {config.CLASS_ID} → {new_class_id}")
+            config.CLASS_ID = new_class_id
+            _write_env_cache("CLASS_ID", new_class_id)
+
+        if new_class_name and new_class_name != config.CLASS_NAME:
+            logger.info(f"Class name changed: {config.CLASS_NAME} → {new_class_name}")
+            config.CLASS_NAME = new_class_name
+            _write_env_cache("CLASS_NAME", new_class_name)
+
+        if new_device_name and new_device_name != config.DEVICE_NAME:
+            logger.info(f"Device name changed: {config.DEVICE_NAME} → {new_device_name}")
+            config.DEVICE_NAME = new_device_name
+            _write_env_cache("DEVICE_NAME", new_device_name)
+
+    except Exception as e:
+        logger.debug(f"Heartbeat failed: {e}")
 
 class SyncDaemon(threading.Thread):
     """Background thread: sync queue + pull embeddings with exponential backoff when offline."""
@@ -138,6 +191,7 @@ class SyncDaemon(threading.Thread):
                 if online != self._online:
                     logger.info("Network %s", "ONLINE" if online else "OFFLINE")
                 self._online = online
+                shared.set_cloud_online(online)
 
                 if online:
                     sync_attendance_queue()

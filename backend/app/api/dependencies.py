@@ -1,4 +1,5 @@
 import logging
+import uuid as _uuid
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +40,7 @@ async def get_current_admin(
         logger.error(f"Token decode error: {e}")
         raise credentials_exception
 
-    result = await db.execute(select(Admin).where(Admin.id == int(admin_id)))
+    result = await db.execute(select(Admin).where(Admin.id == _uuid.UUID(admin_id)))
     admin = result.scalar_one_or_none()
 
     if admin is None or not admin.is_active:

@@ -17,6 +17,11 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(x, -88, 88)))
 
 
+def _is_post_sigmoid(arr: np.ndarray) -> bool:
+    """Heuristic: if all values are in (0,1) range, model already applied sigmoid."""
+    return float(arr.min()) >= 0.0 and float(arr.max()) <= 1.0
+
+
 def _distance2bbox(anchor_centers: np.ndarray, deltas: np.ndarray) -> np.ndarray:
     x1 = anchor_centers[:, 0] - deltas[:, 0]
     y1 = anchor_centers[:, 1] - deltas[:, 1]
@@ -66,6 +71,8 @@ class FaceDetector:
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = config.ORT_NUM_THREADS
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # Suppress benign shape-mismatch warnings from YOLOv8/SCRFD dynamic outputs
+        opts.log_severity_level = 3  # 0=VERBOSE,1=INFO,2=WARNING,3=ERROR only
 
         self.session = ort.InferenceSession(
             model_path,
@@ -86,7 +93,7 @@ class FaceDetector:
     def detect(
         self,
         frame: np.ndarray,
-        conf_threshold: float = 0.5,
+        conf_threshold: float = 0.45,
     ) -> List[Dict[str, Any]]:
         """
         Detect faces in a BGR frame.
@@ -102,6 +109,12 @@ class FaceDetector:
 
         outputs = self.session.run(None, {self.input_name: inp})
 
+        # Detect whether model already outputs post-sigmoid values (0-1 range).
+        # This SCRFD model applies sigmoid internally — calling _sigmoid() again
+        # would compress real face scores down to ~0.5 and cause all anchors to
+        # pass the threshold (breaking detection). Use raw values directly.
+        _already_sigmoid = _is_post_sigmoid(outputs[0])
+
         scale_x = orig_w / sz
         scale_y = orig_h / sz
 
@@ -111,7 +124,8 @@ class FaceDetector:
             fh = sz // stride
             fw = sz // stride
 
-            scores = _sigmoid(outputs[level].ravel())
+            raw = outputs[level].ravel()
+            scores = raw if _already_sigmoid else _sigmoid(raw)
             bboxes = outputs[level + 3] * stride
             kpss   = outputs[level + 6] * stride
 
