@@ -38,6 +38,8 @@ yarn-error.log*
 .pnpm-debug.log*
 *.tsbuildinfo
 next-env.d.ts
+# Root-level lockfile (frontend manages its own in frontend/)
+/package-lock.json
 
 # ============================================================
 # Environment / Secrets — NEVER commit these
