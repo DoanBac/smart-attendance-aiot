@@ -195,6 +195,27 @@ async def capture_frame(
             "pose": {"yaw": yaw_val, "pitch": pitch_val},
         }
 
+    # ── Anti-spoof / liveness validation ───────────────────────────────────────
+    is_live = meta.get("is_live", True)
+    liveness_score = meta.get("liveness_score")
+    if not is_live:
+        logger.warning(
+            "[enrollment] step=%d spoof-rejected — score=%s",
+            data.step_index,
+            liveness_score,
+        )
+        reason = (
+            f"Spoof detected (liveness={liveness_score:.2f}). Please use your real face, not a photo or screen."
+            if isinstance(liveness_score, (int, float))
+            else "Spoof detected. Please use your real face, not a photo or screen."
+        )
+        return {
+            "accepted": False,
+            "reason": reason,
+            "buffered": 0,
+            "liveness_score": liveness_score,
+        }
+
     # Serialize embedding to base64 string for JSON storage in Redis
     emb_b64 = base64.b64encode(emb.astype(np.float32).tobytes()).decode()
 

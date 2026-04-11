@@ -3,12 +3,19 @@ uvicorn[standard]==0.30.6
 pydantic==2.9.2
 pydantic-settings==2.5.2
 
-# AI / Computer Vision
+# AI / Computer Vision (runtime)
 insightface==0.7.3
 onnxruntime==1.19.2
 numpy==1.26.4
 opencv-python-headless==4.10.0.84
 Pillow==10.4.0
-
-# HTTP client (for backend ↔ ai-service internal calls)
 httpx==0.27.2
+
+# Training / ONNX export
+# Dùng chung một file requirements cho cả runtime lẫn huấn luyện
+# để tránh lệch phiên bản giữa lúc train và lúc deploy.
+torch>=2.3.0
+torchvision>=0.18.0
+tqdm>=4.66.0
+onnx>=1.16.0
+onnxscript>=0.1.0

@@ -97,15 +97,52 @@ function EnrollContent() {
   }, [cameraMode]);
 
   const startLocalCamera = async () => {
+    setError("");
+
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setError("This browser context does not support webcam access. Open the app in Chrome or Edge directly.");
+      return;
+    }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: "user" },
-      });
+      let stream: MediaStream;
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: { ideal: "user" },
+          },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+
+      streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = stream;
-      if (videoRef.current) videoRef.current.srcObject = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+
       setError("");
-    } catch {
-      setError("Cannot access local camera. Please check browser permissions.");
+    } catch (e: unknown) {
+      const errorName = e instanceof DOMException ? e.name : e instanceof Error ? e.name : "UnknownError";
+
+      if (errorName === "NotAllowedError" || errorName === "PermissionDeniedError") {
+        setError("Camera permission was blocked. Allow camera access for localhost:3000 and reload the page.");
+      } else if (errorName === "NotReadableError" || errorName === "TrackStartError") {
+        setError("Your camera is busy in another app (Zoom, Teams, Camera, etc.). Close it and try again.");
+      } else if (errorName === "NotFoundError" || errorName === "DevicesNotFoundError") {
+        setError("No webcam was found on this device. Connect one or use the IP Webcam option.");
+      } else if (errorName === "SecurityError") {
+        setError("This page is not allowed to access the camera in the current browser context. Open it in Chrome or Edge.");
+      } else {
+        setError(`Cannot access local camera (${errorName}). Check permissions or use the IP Webcam option.`);
+      }
     }
   };
 

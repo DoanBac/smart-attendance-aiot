@@ -25,9 +25,8 @@ logger = logging.getLogger(__name__)
 _face_app = None
 _antispoof_session = None  # lazy-loaded ONNX anti-spoof session
 
-_ANTISPOOF_MODEL_PATH = "/app/antispoof/anti-spoof-mn3.onnx"
-# Preprocessing constants for anti-spoof-mn3 (CelebA-Spoof trained MobileNetV3)
-# Source: Intel OpenVINO Open Model Zoo — MIT License
+# Default preprocessing constants for Intel OpenVINO anti-spoof-mn3 (MobileNetV3).
+# When ANTISPOOF_MODEL_TYPE=custom_cnn, the service uses simple RGB/255 normalization.
 _AS_MEAN  = np.array([151.2405, 119.5950, 107.8395], dtype=np.float32)
 _AS_SCALE = np.array([ 63.0105,  56.4570,  55.0035], dtype=np.float32)
 
@@ -54,21 +53,31 @@ def get_antispoof_session():
     if _antispoof_session is None:
         import os
         import onnxruntime as ort
-        if not os.path.exists(_ANTISPOOF_MODEL_PATH):
-            logger.warning("[ANTISPOOF] Model not found at %s — liveness skipped", _ANTISPOOF_MODEL_PATH)
+
+        model_path = settings.ANTISPOOF_MODEL_PATH
+        if not os.path.exists(model_path):
+            logger.warning("[ANTISPOOF] Model not found at %s — liveness skipped", model_path)
             return None
+
         opts = ort.SessionOptions()
         opts.inter_op_num_threads = 2
         opts.intra_op_num_threads = 2
         _antispoof_session = ort.InferenceSession(
-            _ANTISPOOF_MODEL_PATH,
+            model_path,
             sess_options=opts,
             providers=["CPUExecutionProvider"],
         )
         inp_name  = _antispoof_session.get_inputs()[0].name
         out_name  = _antispoof_session.get_outputs()[0].name
         inp_shape = _antispoof_session.get_inputs()[0].shape
-        logger.info("[ANTISPOOF] Loaded ✅  input='%s'%s  output='%s'", inp_name, inp_shape, out_name)
+        logger.info(
+            "[ANTISPOOF] Loaded ✅ type=%s path=%s input='%s'%s output='%s'",
+            settings.ANTISPOOF_MODEL_TYPE,
+            model_path,
+            inp_name,
+            inp_shape,
+            out_name,
+        )
     return _antispoof_session
 
 
@@ -87,22 +96,31 @@ def _blur_score(gray: np.ndarray) -> float:
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
+def _prepare_antispoof_input(face_bgr: np.ndarray) -> np.ndarray:
+    """Prepare a face crop for the configured ONNX anti-spoof CNN."""
+    size = int(settings.ANTISPOOF_INPUT_SIZE)
+    face_resized = cv2.resize(face_bgr, (size, size))
+    face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB).astype(np.float32)
+
+    if settings.ANTISPOOF_MODEL_TYPE == "custom_cnn":
+        face_f = face_rgb / 255.0
+    else:
+        face_f = (face_rgb - _AS_MEAN) / _AS_SCALE
+
+    return np.transpose(face_f, (2, 0, 1))[np.newaxis, :].astype(np.float32)
+
+
 def _ml_liveness(bgr: np.ndarray, bbox) -> Tuple[float, bool]:
     """
-    ML-based passive liveness using anti-spoof-mn3 ONNX (MobileNetV3).
+    CNN-based passive liveness using a configurable ONNX anti-spoof model.
 
-    Trained on CelebA-Spoof dataset (625k images, 43 spoof types).
-    ACER = 3.81% on held-out test set.
-
-    Distinguishes:
-      - Printed photo attacks     (paper, cardboard)
-      - Digital screen attacks    (phone, tablet, monitor)
-      - Video replay attacks      (pre-recorded clips)
-    from real live faces.
+    Default configuration uses Intel's `anti-spoof-mn3` (MobileNetV3), but the
+    same code path can also run a custom CNN exported to ONNX from
+    `ai-service/training/train_cnn_antispoof.py`.
 
     Returns (liveness_score 0.0–1.0, is_live bool)
-      score = P(real) from softmax output
-      is_live = score >= 0.55  (slightly conservative vs 0.50)
+      score = P(real/live)
+      is_live = score >= ANTISPOOF_THRESHOLD
     """
     session = get_antispoof_session()
     if session is None:
@@ -128,30 +146,23 @@ def _ml_liveness(bgr: np.ndarray, bbox) -> Tuple[float, bool]:
         x2p = min(iw, x2 + pad_x); y2p = min(ih, y2 + pad_y)
 
         face_bgr = bgr[y1p:y2p, x1p:x2p]
-        face_128 = cv2.resize(face_bgr, (128, 128))
-        face_rgb = cv2.cvtColor(face_128, cv2.COLOR_BGR2RGB)
-
-        # Normalize: (pixel - mean) / std
-        face_f = face_rgb.astype(np.float32)
-        face_f = (face_f - _AS_MEAN) / _AS_SCALE
-        # HWC → NCHW
-        inp = np.transpose(face_f, (2, 0, 1))[np.newaxis, :].astype(np.float32)
+        inp = _prepare_antispoof_input(face_bgr)
 
         # ── Inference ─────────────────────────────────────────────────────────
         inp_name = session.get_inputs()[0].name
-        raw = session.run(None, {inp_name: inp})[0][0]  # shape (2,)
+        raw = np.asarray(session.run(None, {inp_name: inp})[0][0]).reshape(-1)
 
-        # Softmax (stable)
-        e = np.exp(raw - raw.max())
-        probs = e / e.sum()
-        real_prob  = float(probs[0])   # P(real)
-        spoof_prob = float(probs[1])   # P(spoof)
+        if raw.size == 1:
+            real_prob = 1.0 / (1.0 + np.exp(-float(raw[0])))
+            spoof_prob = 1.0 - real_prob
+        else:
+            # Softmax (stable)
+            e = np.exp(raw - raw.max())
+            probs = e / e.sum()
+            real_prob = float(probs[0])   # P(real/live)
+            spoof_prob = float(probs[1]) if probs.size > 1 else 1.0 - real_prob
 
-        # Threshold 0.42 (lowered from 0.55):
-        # - At ≥12° tilt, real faces: real_prob ≈ 0.43–0.75
-        # - At ≥12° tilt, phone/print: real_prob ≈ 0.15–0.38 (moire, glare, flat surface gives it away)
-        # - Frontal scans won't reach here (blocked by pose challenge in backend)
-        is_live = real_prob >= 0.42
+        is_live = real_prob >= settings.ANTISPOOF_THRESHOLD
 
         logger.warning(
             "[ANTISPOOF] real_prob=%.4f  spoof_prob=%.4f  → is_live=%s",

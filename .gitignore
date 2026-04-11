@@ -23,6 +23,8 @@ pip-delete-this-directory.txt
 dmypy.json
 .pytest_cache/
 .ruff_cache/
+.venv*
+*/antispoof
 
 # ============================================================
 # Node / Next.js / Frontend
@@ -61,6 +63,9 @@ edge/data/local.db
 edge/data/*.db-shm
 edge/data/*.db-wal
 edge/models/*.onnx
+ai-service/data/
+ai-service/checkpoints/
+ai-service/antispoof/*.onnx
 
 # ============================================================
 # OS / Editor
