@@ -25,6 +25,7 @@ class SharedState:
         # When auto_attendance=False: pending student waiting for manual confirm
         self.pending_mark: dict | None = None       # {student_id, name, confidence, liveness_score, ts}
         self.pending_mark_ts: float = 0.0           # epoch — for expiry (10s)
+        self.instruction: str = ""                  # Real-time feedback for liveness
         # Recent attendance log — last 20 unique recognitions (in-memory, survives restart via SQLite)
         self._recent: deque = deque(maxlen=20)
 
@@ -50,6 +51,7 @@ class SharedState:
                         "_ts": now,
                         "time_str": time.strftime("%H:%M:%S"),
                     })
+            self.instruction = result.get("instruction", "")
 
     def set_cloud_online(self, online: bool):
         """Called by SyncDaemon each cycle to expose cloud connectivity to the kiosk UI."""
@@ -91,6 +93,7 @@ class SharedState:
                 "require_pose": self.require_pose,
                 "pose_rejected": self.pose_rejected,
                 "pending_mark": pm,
+                "instruction": self.instruction,
                 "debug_best_sim": round(self.best_sim, 4),
                 "debug_best_name": self.best_name,
             }

@@ -3,7 +3,11 @@ from typing import Optional
 import os
 from dotenv import load_dotenv
 
-load_dotenv("/app/config/device.env")
+# Load config from /app/config/device.env (Docker) or local edge/config/device.env
+env_path = "/app/config/device.env"
+if not os.path.exists(env_path):
+    env_path = os.path.join(os.path.dirname(__file__), "..", "config", "device.env")
+load_dotenv(env_path)
 
 @dataclass
 class EdgeConfig:
@@ -28,10 +32,12 @@ class EdgeConfig:
     DETECTION_MODEL: str        = os.getenv("DETECTION_MODEL", "/app/models/yolov8_face_320.onnx")
     EMBEDDING_MODEL: str        = os.getenv("EMBEDDING_MODEL", "/app/models/arcface_r100.onnx")
     DEPTH_MODEL: str            = os.getenv("DEPTH_MODEL", "/app/models/depth_lite.onnx")
+    BLINK_MODEL: str            = os.getenv("BLINK_MODEL", "/app/models/mobilenet_eye_blink.onnx")
 
     # Face Recognition
     COSINE_THRESHOLD: float     = float(os.getenv("COSINE_THRESHOLD", "0.65"))
     LIVENESS_BLINK_THRESHOLD: float = float(os.getenv("LIVENESS_BLINK_THRESHOLD", "0.25"))
+    LIVENESS_REQUIRE_BLINK: bool = os.getenv("LIVENESS_REQUIRE_BLINK", "true").lower() == "true"
 
     # AES Key (must match Cloud server)
     AES_KEY: str                = os.getenv("AES_KEY", "")

@@ -21,34 +21,57 @@ logger = logging.getLogger(__name__)
 class LivenessSession:
     """Tracks liveness state across multiple frames."""
     def __init__(self, fps: int = 10):
+        # Layer 1: DL Blink Detector
         self.blink = BlinkDetector(
-            ear_threshold=config.LIVENESS_BLINK_THRESHOLD, fps=fps
+            threshold=config.LIVENESS_BLINK_THRESHOLD,
+            fps=fps,
+            required_blinks=1
         )
+        
+        # Layer 2: Head Movement
         movement = random.choice(["left", "right", "nod"])
         self.head = HeadMovementChecker(required=movement)
         self.required_movement = movement
+        
+        # Layer 3: Depth
         self.depth_passed = False
+        
         self._started_at = time.time()
+        self.instruction = ""
 
     @property
     def timeout(self) -> bool:
-        return (time.time() - self._started_at) > 12.0  # 12-second window
+        return (time.time() - self._started_at) > 15.0  # Slightly longer for blink + movement
 
     def is_complete(self) -> bool:
-        # Blink (Layer 1) requires 6-pt eye landmarks fed via eye_landmarks_fn.
-        # In offline edge mode eye_landmarks_fn is always None so blink never runs.
-        # Liveness passes when depth OR head movement confirms a real face.
-        return self.depth_passed or self.head._done
+        # Require blink if enabled in config
+        blink_ok = True
+        if config.LIVENESS_REQUIRE_BLINK:
+            blink_ok = len(self.blink._blinks) >= self.blink.required_blinks
+            
+        # Liveness passes when (Blink AND (Depth OR Head Movement))
+        return blink_ok and (self.depth_passed or self.head._done)
+
+    def update_instruction(self):
+        """Update the instruction string based on current progress."""
+        if config.LIVENESS_REQUIRE_BLINK and len(self.blink._blinks) < self.blink.required_blinks:
+            self.instruction = "Chớp mắt để điểm danh (Blink now)"
+        elif not self.head._done:
+            m = self.required_movement
+            text = "Quay đầu sang TRÁI" if m == "left" else "Quay đầu sang PHẢI" if m == "right" else "Gật đầu nhẹ"
+            self.instruction = f"{text} (Move head)"
+        else:
+            self.instruction = "Đang xác thực... (Verifying)"
 
     def liveness_score(self) -> float:
         score = 0.0
-        if self.blink._blinks:
-            score += 0.20
+        if len(self.blink._blinks) > 0:
+            score += 0.30
         if self.head._done:
-            score += 0.40
+            score += 0.35
         if self.depth_passed:
-            score += 0.40
-        return max(score, 0.40)  # floor so partial liveness still records
+            score += 0.35
+        return max(score, 0.40)
 
 
 class AttendancePipeline:
@@ -148,11 +171,8 @@ class AttendancePipeline:
         # Step 4: Liveness Detection (multi-layer)
         ls = liveness_session
         if ls and not ls.is_complete() and not ls.timeout:
-            # Layer 1: Blink — requires 6-pt eye landmarks; fallback skip if not provided
-            if eye_landmarks_fn:
-                lm6 = eye_landmarks_fn(frame)
-                if lm6:
-                    ls.blink.update(lm6[0], lm6[1])
+            # Layer 1: DL Blink Detector — uses 5-pt landmarks
+            ls.blink.update(frame, face["landmarks"])
 
             # Layer 2: Head movement via 5-pt landmarks from detector
             yaw, pitch, roll = self.pose_est.estimate(face["landmarks"])
@@ -163,6 +183,11 @@ class AttendancePipeline:
                 is_live, delta = self.depth_chk.check(aligned)
                 if is_live:
                     ls.depth_passed = True
+            
+            ls.update_instruction()
+            result["instruction"] = ls.instruction
+
+        liveness_ok = ls.is_complete() if ls else True  # Bypass if no session (enrollment)
 
         liveness_ok = ls.is_complete() if ls else True  # Bypass if no session (enrollment)
         liveness_score = ls.liveness_score() if ls else 1.0

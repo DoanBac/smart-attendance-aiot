@@ -137,7 +137,7 @@ docker exec smart-attendance-aiot-backend-1 python reset_admin_password.py
 
 | Service | URL |
 |---|---|
-| Frontend (Admin UI) | http://localhost:3000 |
+| Frontend (Admin UI) | http://localhost (hoặc http://localhost:80) |
 | Backend API | http://localhost:8000 |
 | Swagger UI | http://localhost:8000/docs |
 

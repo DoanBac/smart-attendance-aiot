@@ -146,7 +146,27 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 /* ── Pending mark (waiting confirm) ── */
 .pending-bar{margin-top:10px;background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.4);
              border-radius:8px;padding:8px 12px;text-align:center;
-             color:#7dd3fc;font-size:.82rem;font-weight:600;display:none;}
+             color:#7dd3fc;font-size:0.82rem;font-weight:600;display:none;}
+
+/* Instruction Overlay */
+.ins-overlay {
+  position: absolute; top: 10%; left: 0; right: 0; text-align: center; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; z-index: 10;
+}
+.ins-card {
+  background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(8px);
+  border: 2px solid var(--yellow); border-radius: 12px;
+  padding: 12px 24px; box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  animation: pulse-border 1.5s infinite;
+}
+.ins-text {
+  color: var(--yellow); font-size: 1.1rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; display: block;
+}
+@keyframes pulse-border {
+  0%, 100% { border-color: var(--yellow); transform: scale(1); }
+  50% { border-color: #fbbf24; transform: scale(1.05); }
+}
 
 /* Recent attendance list */
 .recent-header{padding:14px 20px 8px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;}
@@ -200,6 +220,11 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
   <section class="cam-section">
     <div class="cam-wrap">
       <img class="cam-feed" src="/video" alt="Camera">
+      <div class="ins-overlay" id="insOverlay" style="display:none">
+        <div class="ins-card">
+          <span class="ins-text" id="insText">---</span>
+        </div>
+      </div>
       <div class="scan-ring" id="scanRing"></div>
       <div class="rec-flash" id="recFlash"></div>
     </div>
@@ -398,6 +423,15 @@ async function pollStatus() {
       document.getElementById('resultRec').style.display = 'none';
       confirmBtn.style.display = 'none';
       pendingBar.style.display = 'none';
+    }
+
+    // Instruction overlay
+    const insEl = document.getElementById('insOverlay');
+    if (d.instruction && faces > 0 && !liveness) {
+      document.getElementById('insText').textContent = d.instruction;
+      insEl.style.display = 'flex';
+    } else {
+      insEl.style.display = 'none';
     }
 
   } catch(e) {

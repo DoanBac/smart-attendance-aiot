@@ -8,7 +8,7 @@ interface Device {
   device_token: string;
   device_name: string | null;
   location: string | null;
-  class_id: number | null;
+  class_id: string | null;
   last_heartbeat: string | null;
   status: string;
   firmware_version: string | null;
@@ -16,7 +16,7 @@ interface Device {
 }
 
 interface ClassOption {
-  id: number;
+  id: string;
   class_code: string;
   class_name: string;
 }
@@ -48,7 +48,7 @@ export default function DevicesPage() {
       .finally(() => { setLoading(false); setRefreshing(false); });
   };
 
-  const classLabel = (classId: number | null) => {
+  const classLabel = (classId: string | null) => {
     if (!classId) return "—";
     const c = classes.find((x) => x.id === classId);
     return c ? `${c.class_name} (${c.class_code})` : `Class #${classId}`;
@@ -68,7 +68,7 @@ export default function DevicesPage() {
     const res = await fetch(`${base}/api/devices/register`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ ...form, class_id: form.class_id ? parseInt(form.class_id) : null }),
+      body: JSON.stringify({ ...form, class_id: form.class_id || null }),
     });
     const data = await res.json();
     setNewToken(data.device_token || "");
@@ -114,7 +114,7 @@ export default function DevicesPage() {
         body: JSON.stringify({
           device_name: editForm.device_name.trim() || null,
           location: editForm.location.trim() || null,
-          class_id: editForm.class_id ? parseInt(editForm.class_id) : null,
+          class_id: editForm.class_id || null,
         }),
       });
       setEditDevice(null);
