@@ -4,32 +4,41 @@ Edge main entry point.
 - Starts SyncDaemon
 - Runs the attendance recognition loop
 - Posts confirmed attendance to Cloud (or queues offline)
+
+Architecture:
+  Camera thread  →  pushes raw JPEG at CAPTURE_FPS (smooth video, no blocking)
+  AI thread      →  picks up latest frame, runs pipeline, overlays result JPEG
 """
-import cv2
+import queue
 import time
 import logging
 import signal
 import sys
-import requests
-import base64
+import threading
+import cv2
 from datetime import datetime, timezone
 
 from edge.src.config import config
+from edge.src.utils.logger import setup_logging
 from edge.src.database import local_db
-from edge.src.database.local_db import enqueue_attendance, get_all_embeddings
+from edge.src.database.local_db import post_or_queue_attendance, get_all_embeddings
+from edge.src.camera.stream import CameraStream
 from edge.src.ai.pipeline import AttendancePipeline, LivenessSession
-from edge.src.ai.face_embedding import FaceEmbedder
 from edge.src.sync.queue_sync import SyncDaemon
 from edge.src.core.encryption import decrypt_embedding
+from edge.src.database.local_db import post_or_queue_attendance
+from edge.src.web.state import shared
+from edge.src.web.stream import start_server
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+setup_logging()
 logger = logging.getLogger("edge.main")
 
 COOLDOWN_SEC = 10   # Don't re-recognize same student within N seconds
 _recently_marked: dict = {}   # student_id → last_marked timestamp
+
+# Queue used to pass frames from camera loop → AI thread (size=1 = always latest)
+_ai_queue: queue.Queue = queue.Queue(maxsize=1)
+_shutdown_event = threading.Event()
 
 
 def _load_embeddings_to_pipeline(pipeline: AttendancePipeline):
@@ -44,47 +53,137 @@ def _load_embeddings_to_pipeline(pipeline: AttendancePipeline):
     pipeline.load_local_embeddings(decoded)
 
 
-def _post_attendance(student_id: int, confidence: float, liveness_score: float):
-    ts = datetime.now(timezone.utc)
-    try:
-        resp = requests.post(
-            f"{config.CLOUD_API_URL}/api/attendance/",
-            json={
-                "student_id": student_id,
-                "class_id": config.CLASS_ID,
-                "timestamp": ts.isoformat(),
-                "confidence": confidence,
-                "liveness_score": liveness_score,
-                "method": "face",
-                "status": "present",
-            },
-            headers={"X-Device-Token": config.DEVICE_TOKEN, "Content-Type": "application/json"},
-            timeout=10
-        )
-        if resp.status_code == 201:
-            logger.info(f"✅ Attendance posted: student {student_id} ({confidence:.3f})")
-            return True
-    except Exception as e:
-        logger.warning(f"Cloud unreachable, queuing offline: {e}")
+# attendance posting now lives in local_db.post_or_queue_attendance (shared with Flask /mark)
 
-    # Offline fallback
-    enqueue_attendance(
-        student_id=student_id,
-        class_id=config.CLASS_ID,
-        timestamp=ts,
-        confidence=confidence,
-        liveness_score=liveness_score,
-    )
-    return False
 
+# ──────────────────────────────────────────────────────────────────────────────
+# AI inference thread — runs independently from camera loop
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _ai_worker(pipeline: AttendancePipeline):
+    """
+    Continuously pull the latest frame from _ai_queue, run the full pipeline,
+    annotate, and push the annotated JPEG to shared state.
+    Runs in its own thread so camera loop is never blocked.
+    """
+    active_sessions: dict = {}
+    embed_reload_counter = 0
+    RELOAD_EVERY = max(1, (5 * 60 * config.CAPTURE_FPS) // max(config.PROCESS_EVERY_N_FRAMES, 1))
+
+    while not _shutdown_event.is_set():
+        try:
+            frame = _ai_queue.get(timeout=1.0)
+        except queue.Empty:
+            continue
+
+        embed_reload_counter += 1
+        if embed_reload_counter >= RELOAD_EVERY:
+            embed_reload_counter = 0
+            _load_embeddings_to_pipeline(pipeline)
+
+        # Liveness session management
+        session_key = "primary"
+        if session_key not in active_sessions:
+            active_sessions[session_key] = LivenessSession(fps=config.CAPTURE_FPS)
+
+        ls = active_sessions[session_key]
+        if ls.timeout:
+            logger.debug("Liveness session timed out, resetting.")
+            active_sessions[session_key] = LivenessSession(fps=config.CAPTURE_FPS)
+            ls = active_sessions[session_key]
+
+        try:
+            result = pipeline.process_frame_attendance(frame, ls)
+        except Exception as e:
+            logger.warning(f"AI pipeline error: {e}")
+            continue
+
+        # Annotate frame
+        display = frame.copy()
+        bbox = result.get("face_bbox")
+        if bbox:
+            x1, y1, x2, y2 = bbox
+            rec = result.get("recognized")
+            if rec:
+                color = (0, 255, 0)  # green — recognized
+                label = f"{rec['name']} {rec['confidence']:.0%}"
+            elif result.get("liveness_passed") is False and result["faces_detected"] > 0:
+                color = (0, 165, 255)  # orange — liveness check in progress
+                label = "Checking..."
+            else:
+                color = (0, 0, 255)   # red — face detected, unrecognized
+                label = "Unknown"
+            cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(display, label, (x1, max(y1 - 8, 16)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+
+        _, buf = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        shared.update(buf.tobytes(), result)
+
+        # ── Pose check (optional) ───────────────────────────────────────────
+        pose_ok = True
+        if shared.require_pose and result.get("faces_detected", 0) > 0:
+            lm5 = result.get("landmarks")
+            bbox = result.get("face_bbox")
+            if lm5 is not None and bbox is not None:
+                from edge.src.ai.liveness.head_movement import HeadPoseEstimator
+                bw = bbox[2] - bbox[0]
+                bh = bbox[3] - bbox[1]
+                est = HeadPoseEstimator(max(bw, 1), max(bh, 1))
+                yaw, pitch, _roll = est.estimate(lm5)
+                pose_ok = abs(yaw) < 22 and abs(pitch) < 22
+        with shared._lock:
+            shared.pose_rejected = (shared.require_pose and not pose_ok)
+
+        if result.get("recognized"):
+            rec = result["recognized"]
+            sid = rec["student_id"]
+            now = time.time()
+
+            last = _recently_marked.get(sid, 0)
+            if now - last < COOLDOWN_SEC:
+                continue
+
+            if shared.require_pose and not pose_ok:
+                logger.debug(f"Pose check failed for {rec['name']} — skipping mark")
+                continue
+
+            _recently_marked[sid] = now
+            logger.info(
+                f"Recognized: {rec['name']} (id={sid}, sim={rec['confidence']:.3f}, "
+                f"live={rec['liveness_score']:.2f})"
+            )
+
+            if shared.auto_attendance:
+                post_or_queue_attendance(sid, rec["confidence"], rec["liveness_score"])
+                active_sessions.pop(session_key, None)
+            else:
+                # Manual mode — expose to kiosk UI for confirmation
+                shared.set_pending_mark({
+                    "student_id": sid,
+                    "name": rec["name"],
+                    "student_code": rec.get("student_code", ""),
+                    "confidence": round(rec["confidence"], 3),
+                    "liveness_score": round(rec["liveness_score"], 3),
+                })
+                logger.info(f"Manual mode — waiting confirm for {rec['name']}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main entry point
+# ──────────────────────────────────────────────────────────────────────────────
 
 def main():
     logger.info("=== AIoT Edge Attendance System Starting ===")
 
+    # Start web stream server in background thread
+    web_thread = threading.Thread(target=start_server, daemon=True)
+    web_thread.start()
+
     # Init local DB
     local_db.init_db()
 
-    # Start sync daemon (background)
+    # Start sync daemon (with exponential backoff)
     daemon = SyncDaemon()
     daemon.start()
 
@@ -92,84 +191,65 @@ def main():
     time.sleep(3)
 
     # Init AI pipeline
-    pipeline = AttendancePipeline()
+    logger.info("Initializing AI pipeline...")
+    try:
+        pipeline = AttendancePipeline()
+    except Exception as e:
+        logger.exception(f"FATAL: AttendancePipeline init failed: {e}")
+        sys.exit(1)
     _load_embeddings_to_pipeline(pipeline)
 
-    # Open camera
-    src = config.CAMERA_SOURCE
-    cap = cv2.VideoCapture(int(src) if src.isdigit() else src)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
-    cap.set(cv2.CAP_PROP_FPS, config.CAPTURE_FPS)
-
-    if not cap.isOpened():
-        logger.error(f"Cannot open camera: {config.CAMERA_SOURCE}")
+    # Open camera using threaded stream
+    logger.info(f"Opening camera source={config.CAMERA_SOURCE}...")
+    try:
+        cam = CameraStream(
+            source=config.CAMERA_SOURCE,
+            width=config.FRAME_WIDTH,
+            height=config.FRAME_HEIGHT,
+            fps=config.CAPTURE_FPS,
+        ).start()
+    except Exception as e:
+        logger.exception(f"FATAL: Camera open failed (source={config.CAMERA_SOURCE}): {e}")
         sys.exit(1)
 
-    logger.info("Camera opened. Recognition loop running...")
+    logger.info("Camera opened. Starting AI worker thread...")
+
+    # Start AI worker thread
+    ai_thread = threading.Thread(target=_ai_worker, args=(pipeline,), daemon=True, name="ai-worker")
+    ai_thread.start()
 
     # Graceful shutdown
     def _shutdown(sig, frame):
         logger.info("Shutting down...")
+        _shutdown_event.set()
         daemon.stop()
-        cap.release()
+        cam.stop()
         sys.exit(0)
 
-    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    # Per-face liveness sessions
-    active_sessions: dict = {}
+    logger.info("Recognition loop running — camera pushes frames, AI thread processes async.")
 
     frame_idx = 0
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            logger.warning("Frame read failed, retrying...")
-            time.sleep(0.1)
+    while not _shutdown_event.is_set():
+        frame = cam.read()
+        if frame is None:
+            time.sleep(0.01)
             continue
 
         frame_idx += 1
-        # Frame skipping to reduce CPU
-        if frame_idx % config.PROCESS_EVERY_N_FRAMES != 0:
-            continue
 
-        # Re-load embeddings every 5 minutes (picks up new enrollments)
-        if frame_idx % (5 * 60 * config.CAPTURE_FPS // config.PROCESS_EVERY_N_FRAMES) == 0:
-            _load_embeddings_to_pipeline(pipeline)
+        # Always push raw frame immediately → smooth video at full camera FPS
+        _, raw_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
+        shared.update_frame_only(raw_buf.tobytes())
 
-        # Get or create a liveness session (keyed by face position hash — simplified here)
-        session_key = "primary"
-        if session_key not in active_sessions:
-            active_sessions[session_key] = LivenessSession(fps=config.CAPTURE_FPS)
-
-        ls = active_sessions[session_key]
-
-        if ls.timeout:
-            logger.debug("Liveness session timed out, resetting.")
-            active_sessions[session_key] = LivenessSession(fps=config.CAPTURE_FPS)
-            ls = active_sessions[session_key]
-
-        result = pipeline.process_frame_attendance(frame, ls)
-
-        if result.get("recognized"):
-            rec = result["recognized"]
-            sid = rec["student_id"]
-            now = time.time()
-
-            # Cooldown check
-            last = _recently_marked.get(sid, 0)
-            if now - last < COOLDOWN_SEC:
-                continue
-
-            _recently_marked[sid] = now
-            logger.info(
-                f"Recognized: {rec['name']} (id={sid}, sim={rec['confidence']}, "
-                f"live={rec['liveness_score']})"
-            )
-            _post_attendance(sid, rec["confidence"], rec["liveness_score"])
-            # Reset liveness session after successful attendance
-            active_sessions.pop(session_key, None)
+        # Every Nth frame: enqueue for AI processing (drop if AI still busy)
+        if frame_idx % max(config.PROCESS_EVERY_N_FRAMES, 1) == 0:
+            try:
+                _ai_queue.put_nowait(frame.copy())
+            except queue.Full:
+                pass  # AI busy → skip this frame, try next cycle
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { getApiBase } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
@@ -9,7 +10,14 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  // Nếu đã có token → về dashboard
+  useEffect(() => {
+    if (localStorage.getItem("access_token")) {
+      router.replace("/dashboard");
+    }
+  }, [router]);
+
+  const base = getApiBase();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -23,8 +31,12 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }), // ← email, không phải username
       });
 
+      if (resp.status === 401) {
+        setError("Email hoặc mật khẩu không đúng");
+        return;
+      }
       if (!resp.ok) {
-        setError("Invalid email or password");
+        setError("Lỗi server, vui lòng thử lại");
         return;
       }
 

@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.venv/
+.venv-train/
+.pytest_cache/
+.mypy_cache/
+
+# Training artifacts and raw datasets are not needed in the runtime image
+data/
+checkpoints/
+training/
+
+# Local env / docs
+ai-service.env
+README.md

@@ -4,19 +4,24 @@ services:
     image: attendance-edge:latest
     build: .
     privileged: true
+    ports:
+      - "5000:5000"   # Web stream UI: http://<pi-ip>:5000
     volumes:
-      - /dev/video0:/dev/video0          # USB camera
       - ./data:/app/data                  # SQLite local DB
       - ./config:/app/config              # device.env
       - ./models:/app/models              # ONNX models
+      - ./src:/app/edge/src               # Source code (hot-reload without rebuild)
     environment:
       - PYTHONUNBUFFERED=1
+      - TZ=Asia/Ho_Chi_Minh
+      - CAMERA_SOURCE=/dev/video0         # EMEET C950 USB webcam primary capture device
     env_file:
       - ./config/device.env
     restart: unless-stopped
     network_mode: host
     devices:
       - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
     deploy:
       resources:
         limits:

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
+import { getApiBase, apiFetch } from "@/lib/api";
 import { RefreshCw, Wifi } from "lucide-react";
 
 interface AttendanceRecord {
@@ -14,18 +15,26 @@ interface AttendanceRecord {
   method: string;
 }
 
+interface ClassOption {
+  id: number;
+  class_code: string;
+  class_name: string;
+}
+
 export default function AttendancePage() {
-  const [classId, setClassId] = useState("1");
+  const [classes, setClasses] = useState<ClassOption[]>([]);
+  const [classId, setClassId] = useState("");
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connected" | "disconnected">("disconnected");
   const wsRef = useRef<WebSocket | null>(null);
 
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const base = getApiBase();
   const wsBase = base.replace("http", "ws");
   const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : "";
 
   const fetchRecords = () => {
+    if (!classId) return;
     setLoading(true);
     fetch(`${base}/api/attendance/class/${classId}`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -36,8 +45,21 @@ export default function AttendancePage() {
       .finally(() => setLoading(false));
   };
 
+  // Load classes on mount
+  useEffect(() => {
+    apiFetch("/api/classes/")
+      .then((r) => r.json())
+      .then((d) => {
+        const list: ClassOption[] = Array.isArray(d) ? d : d.items ?? [];
+        setClasses(list);
+        if (list.length > 0) setClassId(String(list[0].id));
+      })
+      .catch(() => setClasses([]));
+  }, []);
+
   // WebSocket for realtime updates
   useEffect(() => {
+    if (!classId) return;
     const ws = new WebSocket(`${wsBase}/ws/attendance/${classId}`);
     wsRef.current = ws;
 
@@ -90,8 +112,11 @@ export default function AttendancePage() {
             onChange={(e) => setClassId(e.target.value)}
             className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            {[1, 2, 3, 4, 5].map((id) => (
-              <option key={id} value={id}>Class {id}</option>
+            {classes.length === 0 && <option value="">Loading classes…</option>}
+            {classes.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.class_name} ({c.class_code})
+              </option>
             ))}
           </select>
           <button

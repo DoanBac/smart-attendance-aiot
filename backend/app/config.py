@@ -1,6 +1,8 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
+from pydantic import field_validator
+from typing import Optional, List
 import secrets
+import json
 
 class Settings(BaseSettings):
     # App
@@ -34,15 +36,45 @@ class Settings(BaseSettings):
     MQTT_PASSWORD: Optional[str] = None
     
     # Face Recognition
-    MODEL_STORAGE_PATH: str = "/app/models"      # ← giữ 1 cái duy nhất
-    COSINE_SIMILARITY_THRESHOLD: float = 0.65
+    MODEL_STORAGE_PATH: str = "/app/models"
+    COSINE_SIMILARITY_THRESHOLD: float = 0.50   # buffalo_l: more discriminative; 0.50 safe with angled pose challenge
     MAX_FACE_DISTANCE: float = 0.35
-    
+
+    # AI Face Inference Microservice
+    AI_SERVICE_URL: str = "http://ai-service:9000"   # internal Docker network
+    AI_SERVICE_SECRET_KEY: str = "ai-service-internal-secret-change-in-prod"
+
+    # Email (SMTP) — for schedule reminder emails to wrong-class students
+    SMTP_ENABLED: bool = False
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = "noreply@school.edu.vn"
+    SMTP_FROM_NAME: str = "Smart Attendance System"
+
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 100
     
     # CORS
-    ALLOWED_ORIGINS: list = ["http://localhost:3000", "https://yourdomain.com"]
+    # In .env set as JSON: ALLOWED_ORIGINS='["http://localhost:3000","https://yourdomain.com"]'
+    # For dev, the default below allows the Next.js frontend on port 3000.
+    ALLOWED_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_origins(cls, v):
+        """Accept both a JSON string and a Python list."""
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                # Treat comma-separated string as fallback
+                return [o.strip() for o in v.split(",") if o.strip()]
+        return v
 
     class Config:
         env_file = ".env"
