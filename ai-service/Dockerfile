@@ -16,7 +16,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python - <<'PY'
+from pathlib import Path
+src = Path('requirements.txt').read_text(encoding='utf-8').splitlines()
+out = []
+for line in src:
+    if line.strip().startswith('# Training / ONNX export'):
+        break
+    out.append(line)
+Path('requirements.runtime.txt').write_text('\n'.join(out).strip() + '\n', encoding='utf-8')
+print('Generated requirements.runtime.txt')
+PY
+RUN pip install --no-cache-dir -r requirements.runtime.txt
 
 # Pre-create model dir (InsightFace downloads here on first boot)
 RUN mkdir -p /app/models

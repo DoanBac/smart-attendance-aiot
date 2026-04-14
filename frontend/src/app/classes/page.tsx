@@ -40,6 +40,16 @@ const EMPTY_FORM = {
 
 type FormState = typeof EMPTY_FORM;
 
+type ClassFormProps = {
+  f: FormState;
+  setF: React.Dispatch<React.SetStateAction<FormState>>;
+  err: string;
+  onSubmit: (e: React.FormEvent) => void;
+  saving: boolean;
+  onCancel: () => void;
+  title: string;
+};
+
 function classToForm(c: ClassItem): FormState {
   return {
     class_code: c.class_code,
@@ -53,6 +63,86 @@ function classToForm(c: ClassItem): FormState {
     start_time: c.schedule?.start_time ?? "",
     end_time: c.schedule?.end_time ?? "",
   };
+}
+
+function ClassForm({ f, setF, err, onSubmit, saving: isSaving, onCancel, title }: ClassFormProps) {
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 my-4">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-lg font-semibold text-gray-800">{title}</h2>
+          <button type="button" onClick={onCancel} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { key: "class_code", label: "Mã lớp (tự động nếu để trống)", ph: "CS101-01" },
+              { key: "class_name", label: "Tên lớp *" },
+              { key: "subject", label: "Subject" },
+              { key: "room", label: "Room" },
+              { key: "semester", label: "Semester", ph: "2024-1" },
+              { key: "academic_year", label: "Academic Year", ph: "2024-2025" },
+              { key: "capacity", label: "Capacity", type: "number" },
+            ].map(({ key, label, ph, type }) => (
+              <div key={key} className={key === "class_name" ? "col-span-2" : ""}>
+                <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
+                <input
+                  type={type ?? "text"}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder={ph ?? ""}
+                  value={(f as Record<string, string>)[key] ?? ""}
+                  onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Schedule Days</label>
+            <div className="flex flex-wrap gap-2">
+              {DAYS.map((d) => (
+                <button
+                  key={d} type="button"
+                  onClick={() => setF((p) => ({
+                    ...p,
+                    days: p.days.includes(d) ? p.days.filter((x) => x !== d) : [...p.days, d],
+                  }))}
+                  className={`text-xs px-3 py-1.5 rounded-md font-medium border transition-colors ${f.days.includes(d) ? "bg-blue-600 text-white border-blue-600" : "text-gray-600 border-gray-200 hover:border-blue-400"}`}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { key: "start_time", label: "Start Time", type: "time" },
+              { key: "end_time", label: "End Time", type: "time" },
+            ].map(({ key, label, type }) => (
+              <div key={key}>
+                <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
+                <input
+                  type={type}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={(f as Record<string, string>)[key]}
+                  onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+
+          {err && <p className="text-sm text-red-500">{err}</p>}
+          <div className="flex gap-3 pt-1">
+            <button type="submit" disabled={isSaving} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-60">
+              {isSaving ? "Saving..." : "Save"}
+            </button>
+            <button type="button" onClick={onCancel} className="flex-1 border border-gray-200 py-2 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 }
 
 function formToBody(f: FormState) {
@@ -147,95 +237,6 @@ export default function ClassesPage() {
   };
 
   const semesters = Array.from(new Set(classes.map((c) => c.semester).filter(Boolean))) as string[];
-
-  const ClassForm = ({
-    f, setF, err, onSubmit, saving: isSaving, onCancel, title,
-  }: {
-    f: FormState;
-    setF: React.Dispatch<React.SetStateAction<FormState>>;
-    err: string;
-    onSubmit: (e: React.FormEvent) => void;
-    saving: boolean;
-    onCancel: () => void;
-    title: string;
-  }) => (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 my-4">
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="text-lg font-semibold text-gray-800">{title}</h2>
-          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
-        </div>
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            {[
-              { key: "class_code", label: "Mã lớp (tự động nếu để trống)", ph: "CS101-01" },
-              { key: "class_name", label: "Tên lớp *" },
-              { key: "subject", label: "Subject" },
-              { key: "room", label: "Room" },
-              { key: "semester", label: "Semester", ph: "2024-1" },
-              { key: "academic_year", label: "Academic Year", ph: "2024-2025" },
-              { key: "capacity", label: "Capacity", type: "number" },
-            ].map(({ key, label, ph, type }) => (
-              <div key={key} className={key === "class_name" ? "col-span-2" : ""}>
-                <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
-                <input
-                  type={type ?? "text"}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder={ph ?? ""}
-                  value={(f as Record<string, string>)[key] ?? ""}
-                  onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))}
-                />
-              </div>
-            ))}
-          </div>
-
-          {/* Schedule */}
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1.5">Schedule Days</label>
-            <div className="flex flex-wrap gap-2">
-              {DAYS.map((d) => (
-                <button
-                  key={d} type="button"
-                  onClick={() => setF((p) => ({
-                    ...p,
-                    days: p.days.includes(d) ? p.days.filter((x) => x !== d) : [...p.days, d],
-                  }))}
-                  className={`text-xs px-3 py-1.5 rounded-md font-medium border transition-colors ${f.days.includes(d) ? "bg-blue-600 text-white border-blue-600" : "text-gray-600 border-gray-200 hover:border-blue-400"}`}
-                >
-                  {d}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {[
-              { key: "start_time", label: "Start Time", type: "time" },
-              { key: "end_time", label: "End Time", type: "time" },
-            ].map(({ key, label, type }) => (
-              <div key={key}>
-                <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
-                <input
-                  type={type}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  value={(f as Record<string, string>)[key]}
-                  onChange={(e) => setF((p) => ({ ...p, [key]: e.target.value }))}
-                />
-              </div>
-            ))}
-          </div>
-
-          {err && <p className="text-sm text-red-500">{err}</p>}
-          <div className="flex gap-3 pt-1">
-            <button type="submit" disabled={isSaving} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-60">
-              {isSaving ? "Saving..." : "Save"}
-            </button>
-            <button type="button" onClick={onCancel} className="flex-1 border border-gray-200 py-2 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
 
   return (
     <div className="p-8">

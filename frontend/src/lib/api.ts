@@ -8,10 +8,18 @@
  * Server-side (SSR/build), falls back to NEXT_PUBLIC_API_URL env var.
  */
 export function getApiBase(): string {
-  if (typeof window !== "undefined") {
-    return window.location.origin;
+  const envBase = process.env.NEXT_PUBLIC_API_URL;
+  if (envBase) {
+    return envBase.replace(/\/$/, "");
   }
-  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  if (typeof window !== "undefined") {
+    const { protocol, hostname, port, origin } = window.location;
+    if ((hostname === "localhost" || hostname === "127.0.0.1") && port === "3000") {
+      return `${protocol}//${hostname}:8000`;
+    }
+    return origin;
+  }
+  return "http://localhost:8000";
 }
 
 /**
@@ -19,11 +27,19 @@ export function getApiBase(): string {
  * Automatically upgrades to wss:// when page is on https.
  */
 export function getWsBase(): string {
+  const envWs = process.env.NEXT_PUBLIC_WS_URL;
+  if (envWs) {
+    return envWs.replace(/\/$/, "");
+  }
   if (typeof window !== "undefined") {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${protocol}//${window.location.host}`;
+    const { hostname, port, host } = window.location;
+    if ((hostname === "localhost" || hostname === "127.0.0.1") && port === "3000") {
+      return `${protocol}//${hostname}:8000`;
+    }
+    return `${protocol}//${host}`;
   }
-  const api = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const api = getApiBase();
   return api.replace(/^http/, "ws");
 }
 

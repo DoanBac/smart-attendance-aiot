@@ -31,7 +31,7 @@
 | Đăng ký khuôn mặt (cloud) | Admin chụp 6 góc nhìn × 5 frames qua webcam, InsightFace trích xuất embedding |
 | Đăng ký khuôn mặt (offline) | Tại thiết bị Pi — 6 góc × 5 frames, cùng model và flow với cloud |
 | Nhận diện real-time | Edge device nhận diện với cosine similarity trên embedding 512-dim |
-| Liveness detection | Depth estimation (64×64) + Head pose — chống ảnh tĩnh/video replay |
+| Liveness detection | CNN anti-spoof (ONNX) + head pose challenge — chặn ảnh tĩnh, màn hình và replay video |
 | Offline resilience | SQLite queue trên edge, tự bulk-sync khi có mạng |
 | Mã hóa embedding | AES-256-GCM — embedding không bao giờ lưu plaintext |
 | WebSocket | Dashboard cập nhật điểm danh real-time qua WS |
@@ -48,9 +48,9 @@
 │  Next.js :3000 ──▶ FastAPI :8000 ──▶ PostgreSQL :5432  │
 │                         │              Redis :6379        │
 │                         ▼                                │
-│                  AI Service :8001                        │
-│              (InsightFace buffalo_sc)                    │
-│       Detection: SCRFD · Recognition: w600k_mbf.onnx    │
+│                  AI Service :9000                        │
+│        (InsightFace + CNN anti-spoof / liveness)         │
+│   Detection: SCRFD · Recognition: ArcFace · Liveness CNN │
 └────────────────────────┬────────────────────────────────┘
                          │  REST + Device Token (LAN/Internet)
 ┌────────────────────────▼────────────────────────────────┐
@@ -397,39 +397,78 @@ Broadcast real-time mỗi khi edge ghi điểm danh.
 
 ## 9. Pipeline AI
 
-### Cloud-side — InsightFace buffalo_sc
+### 9.1 Tư duy cốt lõi: nhận dạng danh tính khác với chống spoof
+
+Hệ thống hiện tại **tách thành 2 bài toán deep learning**:
+
+1. **Face Recognition (ArcFace / InsightFace)**
+   - Trả lời câu hỏi: **"đây là ai?"**
+   - Output là **embedding 512 chiều** để so cosine similarity với dữ liệu đã đăng ký.
+
+2. **Anti-Spoof / Liveness (CNN ONNX)**
+   - Trả lời câu hỏi: **"đây có phải người thật trước camera không?"**
+   - Output là `liveness_score` và `is_live` để chặn ảnh tĩnh, ảnh trên điện thoại/laptop, hoặc replay video.
+
+> Nếu chỉ dùng ArcFace thì **ảnh của đúng người vẫn có thể match rất tốt**. Vì vậy hệ thống bắt buộc phải thêm **CNN anti-spoof + head pose challenge** để phân biệt **người thật** với **ảnh/video giả mạo**.
+
+### 9.2 Cloud-side — Enrollment / Verification
 
 ```
-Webcam (6 poses × 5 frames)
-  → JPEG base64 → /api/enrollment/capture-frame
-  → SCRFD Detection → bbox + 5 landmarks
-  → Alignment → 112×112 affine warp
-  → w600k_mbf.onnx (ArcFace MobileFaceNet) → 512-dim L2-normalized
-  → Quality check → buffer → finalize → weighted avg → AES-encrypt → DB
+Webcam / Camera frame
+  → JPEG base64 → backend
+  → ai-service /api/v1/extract
+  → Face detect (InsightFace)
+  → ArcFace embedding 512-dim
+  → Blur check + face size check
+  → Head pose (yaw / pitch)
+  → CNN anti-spoof → liveness_score / is_live
+  → nếu live: buffer / identify
+  → nếu spoof: reject ngay
 ```
 
-### Edge-side — ONNX Runtime (Raspberry Pi)
+Trong luồng cloud:
+
+- `backend/app/api/routes/enrollment.py` kiểm tra từng frame đăng ký
+- `backend/app/services/attendance_service.py` kiểm tra khi kiosk/điểm danh
+- chỉ khi `is_live=True` thì frame mới được chấp nhận để lưu hoặc dùng cho attendance
+
+### 9.3 Kiosk / Attendance — logic chống spoof khi điểm danh
+
+```
+Camera frame
+  → /api/attendance/verify-face
+  → ai-service /extract
+  → ArcFace + anti-spoof
+  → pose challenge trái/phải (active liveness)
+  → cosine similarity với gallery
+  → ghi nhận attendance nếu vừa đúng người vừa là người thật
+```
+
+Điểm quan trọng:
+
+- **Passive liveness**: CNN học texture/màu/độ phản xạ/mô hình màn hình, giúp phân biệt face thật với face hiển thị trên giấy hoặc màn hình.
+- **Active liveness**: người dùng phải xoay đầu theo hướng yêu cầu, giúp giảm khả năng qua mặt bằng ảnh tĩnh hoặc replay video không đúng thời điểm.
+
+### 9.4 Edge-side — ONNX Runtime (Raspberry Pi)
 
 ```
 Camera Frame (640×480 @ 20fps)
   ├──▶ Camera thread → MJPEG stream (/video)
   └──▶ AI worker thread (async queue maxsize=1)
         [1] SCRFD Detection (yolov8_face_320.onnx)
-            NOTE: output post-sigmoid — KHÔNG apply sigmoid lại
         [2] 5-point landmark → 112×112 crop
-        [3] Liveness: depth auto-pass nếu disabled OR head pose
-        [4] w600k_mbf.onnx → 512-dim embedding
-            CÙNG model cloud → embedding space tương thích
-        [5] Cosine similarity vs local cache (threshold 0.45)
+        [3] Liveness / pose checks
+        [4] w600k_mbf.onnx → embedding 512-dim
+        [5] Cosine similarity vs local cache
         → Recognized: POST /api/attendance/ (hoặc SQLite queue)
 ```
 
-### Edge /enroll — Offline Enrollment
+### 9.5 Vì sao logic này cần thiết
 
-1. Mã SV → `/enroll/lookup` → auto-fill tên
-2. JS capture `/enroll/capture` mỗi 600ms → detect + embed → buffer
-3. 6 poses × 5 frames = 30 embeddings
-4. `/enroll/finalize` → average → L2-norm → AES-encrypt → `is_local=1`
+- chặn việc **điểm danh bằng ảnh của chính người dùng**
+- giảm false accept với **điện thoại, laptop, tablet, ảnh in**
+- cho phép **ArcFace tập trung vào identity**, còn **CNN tập trung vào live/spoof**
+- dễ thay thế / nâng cấp model liveness mà không phải thay toàn bộ pipeline nhận diện
 
 ---
 
@@ -618,6 +657,26 @@ def is_complete(self) -> bool:
 
 - [ ] Verify `w600k_mbf.onnx` download → test recognition end-to-end
 - [ ] Flash ESP8266 → test relay mở cửa
+
+---
+
+## 14. Tài liệu chi tiết anti-spoof / deep learning
+
+Phần hướng dẫn chi tiết bằng **tiếng Việt** cho chống spoofing, dataset và huấn luyện CNN nằm tại:
+
+- `ai-service/README.md`
+
+Tài liệu đó mô tả:
+
+- vì sao **ArcFace không đủ** để chống ảnh / replay attack
+- kiến trúc **ArcFace + CNN anti-spoof + pose challenge** trong runtime
+- cách thu thập và chia dữ liệu **train / dev(val) / test**
+- cách dùng các script `organize_antispoof_samples.py`, `extract_spoof_frames.py`, `train_cnn_antispoof.py`
+- cách export ONNX và copy **cả** `.onnx` lẫn `.onnx.data` vào runtime
+- cách tune `ANTISPOOF_THRESHOLD` và đánh giá chất lượng chống giả mạo
+
+### Ghi chú phần cứng còn lại
+
 - [ ] Fix LED_RED GPIO0 boot issue (đổi sang GPIO12)
 - [ ] Xử lý magnet overheating
 

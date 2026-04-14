@@ -10,12 +10,33 @@ echo "▶ Running Alembic migrations..."
 CURRENT=$(alembic current 2>/dev/null || true)
 
 if [ -z "$CURRENT" ]; then
-    echo "  No Alembic version detected. Attempting upgrade head..."
-    # Tables may already exist (pre-Alembic DB). Try upgrade; if tables already
-    # exist, stamp the DB at head (current state = initial migration applied).
+    echo "  No Alembic version detected. Bootstrapping schema for fresh/pre-Alembic DB..."
+    python - <<'PY'
+import asyncio
+from app.database.session import engine, Base
+
+# Import all models so Base.metadata is fully populated before create_all.
+import app.models.admin       # noqa: F401
+import app.models.class_      # noqa: F401
+import app.models.student     # noqa: F401
+import app.models.device      # noqa: F401
+import app.models.attendance  # noqa: F401
+import app.models.enrollment  # noqa: F401
+
+async def main():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+
+asyncio.run(main())
+PY
+
+    echo "  Attempting upgrade head..."
+    # If the DB was just bootstrapped to the current schema, Alembic may fail
+    # with duplicate table/column errors. In that case, stamp the DB at head.
     alembic upgrade head 2>/tmp/alembic_err.txt || {
-        if grep -q "already exists" /tmp/alembic_err.txt; then
-            echo "  Existing tables found (pre-Alembic DB). Stamping at head..."
+        if grep -Eqi "already exists|duplicate|DuplicateTable|DuplicateColumn" /tmp/alembic_err.txt; then
+            echo "  Existing/current tables found. Stamping at head..."
             alembic stamp head
             echo "  Stamped. Future migrations will apply normally."
         else
