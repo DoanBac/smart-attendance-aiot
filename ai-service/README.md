@@ -302,6 +302,49 @@ Output chính (được ghi cố định về `ai-service/checkpoints/` kể c�
 - `ai-service/checkpoints/custom-cnn-antispoof.onnx`
 - đôi khi có thêm `ai-service/checkpoints/custom-cnn-antispoof.onnx.data`
 
+Ngoài ra, trong lúc train đang chạy script sẽ ghi **metrics theo thời gian thực** vào:
+
+- `ai-service/checkpoints/training_metrics.latest.json` — metric mới nhất của epoch hiện tại
+- `ai-service/checkpoints/training_metrics.jsonl` — append từng epoch theo dạng JSON Lines
+- `ai-service/checkpoints/training_metrics.csv` — dễ mở bằng Excel hoặc pandas
+- `ai-service/checkpoints/threshold_sweep.latest.csv` — bảng metric theo nhiều threshold ở epoch hiện tại
+- `ai-service/checkpoints/threshold_selection.latest.json` — threshold đang được đề xuất tốt nhất từ tập validation
+- `ai-service/checkpoints/threshold_selection.jsonl` — lịch sử threshold đề xuất qua từng epoch
+
+Nếu không muốn ghi các file này, thêm cờ:
+
+```powershell
+python .\training\train_cnn_antispoof.py --disable-live-metrics
+```
+
+### Theo dõi metrics khi chương trình đang chạy
+
+Mở một terminal khác ở thư mục gốc repo và dùng một trong các cách sau:
+
+```powershell
+Get-Content .\ai-service\checkpoints\training_metrics.jsonl -Wait
+```
+
+hoặc:
+
+```powershell
+Get-Content .\ai-service\checkpoints\training_metrics.latest.json -Wait
+```
+
+hoặc nếu muốn vừa train vừa lưu log console:
+
+```powershell
+python .\ai-service\training\train_cnn_antispoof.py ... | Tee-Object .\ai-service\checkpoints\train_console.log
+```
+
+Nếu muốn đổi ngưỡng đánh giá mặc định hoặc độ mịn của threshold sweep:
+
+```powershell
+python .\training\train_cnn_antispoof.py `
+  --eval-threshold 0.5 `
+  --threshold-step 0.05
+```
+
 ---
 
 ## 8. Đưa model vào runtime
@@ -346,14 +389,22 @@ Ngoài accuracy, với anti-spoof nên quan tâm thêm:
 
 | Metric | Ý nghĩa |
 |---|---|
+| `Precision` | trong những ảnh model cho là `live`, có bao nhiêu ảnh thật sự là người thật |
+| `Recall` | trong toàn bộ ảnh `live`, model giữ lại được bao nhiêu |
+| `F1` | trung bình điều hoà giữa `precision` và `recall`, hữu ích khi muốn cân bằng 2 phía |
 | `APCER` | tỉ lệ spoof lọt qua được |
 | `BPCER` | tỉ lệ người thật bị chặn nhầm |
 | `ACER` | trung bình của APCER và BPCER |
+| `ROC-AUC` | khả năng tách `live` và `spoof` trên mọi threshold; càng gần `1.0` càng tốt |
+| `PR-AUC` | tốt khi dữ liệu lệch lớp; cho biết chất lượng giữ `live` mà vẫn hạn chế false accept |
 
 Mục tiêu thực tế:
 
 - `APCER` thấp: ảnh / video giả khó qua mặt
 - `BPCER` không quá cao: người thật vẫn đăng ký / điểm danh được ổn định
+- `ROC-AUC` và `PR-AUC` cao: model tách 2 nhóm tốt ngay cả trước khi chốt threshold cuối cùng
+
+Trainer hiện tại sẽ ghi các metric này vào `training_summary.json`, `training_metrics.*`, đồng thời tạo `threshold_sweep.latest.csv` để bạn xem threshold nào cho `ACER` thấp nhất trên validation.
 
 ### 9.2 Chọn threshold như thế nào?
 
@@ -367,6 +418,8 @@ Không nên đoán tay. Nên làm như sau:
 4. chốt threshold cuối cùng rồi mới đem thử trên `test/`
 
 > Nếu threshold quá cao, người thật dễ bị reject. Nếu quá thấp, spoof dễ lọt. Vì vậy `ANTISPOOF_THRESHOLD` phải được chọn từ dữ liệu validation, không chọn cảm tính.
+
+File `threshold_selection.latest.json` là nơi nhanh nhất để xem trainer đang đề xuất threshold nào ở epoch mới nhất.
 
 ---
 
