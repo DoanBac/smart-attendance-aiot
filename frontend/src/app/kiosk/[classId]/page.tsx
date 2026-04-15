@@ -96,6 +96,14 @@ const STATUS_CFG: Record<string, StatusCfg> = {
     icon     : <AlertTriangle className="w-14 h-14 sm:w-20 sm:h-20 text-purple-400 drop-shadow-lg" />,
     title    : "Wrong Class",
   },
+  processing: {
+    gradient : "from-indigo-900/40 to-indigo-950/60",
+    border   : "border-indigo-400/50",
+    ovalBorder: "border-indigo-400 shadow-[0_0_50px_10px_rgba(129,140,248,0.25)]",
+    textColor: "text-indigo-200",
+    icon     : <Loader2 className="w-14 h-14 sm:w-20 sm:h-20 text-indigo-400 animate-spin" />,
+    title    : "AI Analysis...",
+  },
 };
 
 // ─────────────────────────── Main component ───────────────────────────────────
@@ -301,45 +309,64 @@ function KioskInner({ classId: classCode }: { classId: string }) {
     // ── Notify ESP8266: scan started → red LED blinks ───────────────────────
     notifyEsp("/door/scan");
 
-    let image_b64: string;
+    const frames_b64: string[] = [];
 
     if (edgeStreamUrl) {
-      // Edge stream mode: fetch a snapshot JPEG from the edge container
-      try {
-        const snapResp = backendProxyMode
-          ? await fetch(`${base}/api/devices/by-class/${classCode}/edge-snapshot`, {
-              headers: { "X-Device-Token": token },
-            })
-          : await fetch(`${edgeStreamUrl}/snapshot`);
-        if (!snapResp.ok) throw new Error("snapshot fetch failed");
-        const buf = await snapResp.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        let binary = "";
-        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-        image_b64 = btoa(binary);
-      } catch {
-        setResult({ matched: false, confidence: 0, status: "error", message: "Cannot reach edge stream" });
-        setScan("error");
-        notifyEsp("/door/deny");
-        return;
+      // Edge stream mode: fetch 20 snapshots linearly
+      for (let i = 0; i < 20; i++) {
+        try {
+          const snapResp = backendProxyMode
+            ? await fetch(`${base}/api/devices/by-class/${classCode}/edge-snapshot`, {
+                headers: { "X-Device-Token": token },
+              })
+            : await fetch(`${edgeStreamUrl}/snapshot`);
+          if (!snapResp.ok) continue;
+          const buf = await snapResp.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let binary = "";
+          for (let j = 0; j < bytes.byteLength; j++) binary += String.fromCharCode(bytes[j]);
+          frames_b64.push(btoa(binary));
+        } catch {
+          if (frames_b64.length === 0) {
+            setResult({ matched: false, confidence: 0, status: "error", message: "Cannot reach edge stream" });
+            setScan("error");
+            notifyEsp("/door/deny");
+            return;
+          }
+        }
+        // Small delay if not in proxy mode. Local edge stream can burst fast.
+        await new Promise(r => setTimeout(r, backendProxyMode ? 50 : 100));
       }
     } else {
-      // Browser camera mode: draw from video element to canvas
+      // Browser camera mode: Burst 20 frames
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      canvas.width  = video.videoWidth  || 1280;
-      canvas.height = video.videoHeight || 720;
+      const maxW = 640;
+      let w = video.videoWidth || 640;
+      let h = video.videoHeight || 480;
+      if (w > maxW) {
+        h = Math.floor(h * (maxW / w));
+        w = maxW;
+      }
+      canvas.width = w;
+      canvas.height = h;
       const ctx = canvas.getContext("2d");
       if (!ctx) { setScan("error"); return; }
-      ctx.drawImage(video, 0, 0);
-      image_b64 = canvas.toDataURL("image/jpeg", 0.88).split(",")[1];
+
+      for (let i = 0; i < 20; i++) {
+        ctx.drawImage(video, 0, 0, w, h);
+        frames_b64.push(canvas.toDataURL("image/jpeg", 0.70).split(",")[1]);
+        await new Promise(r => setTimeout(r, 100)); // 10fps, total ~2.0s
+      }
     }
 
+    setScan("processing");
+
     try {
-      const resp = await fetch(`${base}/api/attendance/verify-face`, {
+      const resp = await fetch(`${base}/api/attendance/verify-sequence`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Device-Token": token },
-        body: JSON.stringify({ image_b64, class_id: numericClassId, ...(challengeEnabled ? { challenge_dir: challenge } : {}) }),
+        body: JSON.stringify({ images_b64: frames_b64, class_id: numericClassId }),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -543,7 +570,9 @@ function KioskInner({ classId: classCode }: { classId: string }) {
           {!showResult ? (
             <p className="text-white/80 text-xs sm:text-sm font-medium bg-black/30 backdrop-blur-sm px-4 py-1.5 rounded-full text-center">
               {scanStatus === "scanning"
-                ? "⚡ Recognizing…"
+                ? "⚡ Liveness check... Please BLINK!"
+                : scanStatus === "processing"
+                  ? "🧠 AI Analysis in progress..."
                 : autoScan
                   ? `Position your face · auto-scan in ${countdown}s`
                   : "Position your face and press the button below"}

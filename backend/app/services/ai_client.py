@@ -87,6 +87,44 @@ async def ai_extract_embedding(
     return embedding, data["quality"], data["meta"]
 
 
+async def ai_extract_burst(
+    images_b64: List[str],
+    min_blur: Optional[float] = None,
+) -> Tuple[np.ndarray, float, dict]:
+    """
+    POST /api/v1/extract-burst on ai-service
+    """
+    payload: dict = {"images_b64": images_b64}
+    if min_blur is not None:
+        payload["min_blur"] = min_blur
+
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/api/v1/extract-burst",
+                json=payload,
+                headers=_headers(),
+            )
+    except httpx.ConnectError:
+        raise RuntimeError(
+            "Cannot connect to AI service. "
+            f"Make sure ai-service is running on {settings.AI_SERVICE_URL}"
+        )
+    except httpx.TimeoutException:
+        raise RuntimeError("AI service timed out during sequence extraction")
+
+    if resp.status_code == 422:
+        detail = resp.json().get("detail", "Face sequence extraction failed")
+        raise ValueError(detail)
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"AI service error {resp.status_code}: {resp.text}")
+
+    data = resp.json()
+    embedding = _b64_to_emb(data["embedding_b64"])
+    return embedding, data["quality"], data["meta"]
+
+
 async def ai_identify(
     probe: np.ndarray,
     gallery: List[Tuple],   # (student_id: any, plain_embedding: np.ndarray)

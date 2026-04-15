@@ -10,6 +10,8 @@ Không làm: mã hóa, DB, auth — đó là việc của backend.
 """
 import io
 import logging
+import base64
+import json
 import numpy as np
 from typing import Optional, Tuple, List
 
@@ -373,6 +375,81 @@ def extract_embedding(
     }
 
     return emb, quality, meta
+
+
+def extract_sequence(
+    images_b64: List[str],
+    min_blur: Optional[float] = None,
+) -> Tuple[np.ndarray, float, dict]:
+    """
+    Process a burst sequence of frames to verify blink liveness.
+    Returns embedding of the best frame and sets blink_ok=True.
+    """
+    from app.core.blink_detector import analyze_blink_sequence
+    
+    min_blur = min_blur if min_blur is not None else settings.MIN_BLUR_VAR
+    app = get_face_app()
+    
+    decoded_frames = []
+    for b64 in images_b64:
+        try:
+            b64_padded = b64 + "=" * ((4 - len(b64) % 4) % 4)
+            img_bytes = base64.b64decode(b64_padded)
+            bgr = _decode_image(img_bytes)
+            decoded_frames.append((bgr, img_bytes))
+        except Exception as exc:
+            logger.error(f"Decode error: {exc}")
+            continue
+            
+    if not decoded_frames:
+        raise ValueError("No valid images in sequence")
+
+    frames = [f[0] for f in decoded_frames]
+    landmarks_list = [None] * len(frames)
+    best_face = None
+    best_img_bytes = None
+    
+    # ── Step 1: Find face in the sequence (only once) ────────────────────────
+    # We try frames from the middle first, as they are likely the most stable
+    search_indices = list(range(len(frames)))
+    mid = len(frames) // 2
+    search_indices.sort(key=lambda i: abs(i - mid))
+    
+    found_kps = None
+    for i in search_indices:
+        bgr = frames[i]
+        faces = app.get(bgr)
+        if faces:
+            # Select largest face
+            face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+            if hasattr(face, "kps") and face.kps is not None and len(face.kps) >= 5:
+                found_kps = face.kps
+                best_face = face
+                best_img_bytes = decoded_frames[i][1]
+                break
+    
+    if found_kps is None:
+        raise ValueError("No face detected in any frame of the sequence")
+        
+    # ── Step 2: Reuse these keypoints for all frames for blink analysis ──────
+    # (Assuming face doesn't move significantly in 2.0s)
+    for i in range(len(frames)):
+        landmarks_list[i] = found_kps
+            
+    blink_ok, debug_info = analyze_blink_sequence(frames, landmarks_list)
+    logger.warning(f"[LIVENESS] status={blink_ok} amplitude={debug_info.get('amplitude')} frames={len(frames)}")
+    
+    if not blink_ok:
+        raise ValueError(f"Liveness failed. Debug: {json.dumps(debug_info)}")
+        
+    if best_img_bytes:
+        # Step 3: Extract embedding for recognition from our best frame
+        emb, quality, meta = extract_embedding(best_img_bytes, min_blur)
+        meta["blink_ok"] = True
+        meta["liveness_debug"] = debug_info
+        return emb, quality, meta
+    else:
+        raise ValueError("No valid face found in sequence")
 
 
 def batch_identify(

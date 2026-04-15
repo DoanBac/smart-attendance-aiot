@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
 from app.config import settings
-from app.core.face_model import extract_embedding, batch_identify
+from app.core.face_model import extract_embedding, batch_identify, extract_sequence
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,6 +27,11 @@ def _verify_service_key(key: Optional[str]):
 # ── Schemas ───────────────────────────────────────────────────────────────────
 class ExtractRequest(BaseModel):
     image_b64: str          # Raw base64 JPEG (no data:image prefix)
+    min_blur: Optional[float] = None
+
+
+class BurstRequest(BaseModel):
+    images_b64: List[str]   # List of Raw base64 JPEG (no data:image prefix)
     min_blur: Optional[float] = None
 
 
@@ -133,3 +138,29 @@ async def identify_endpoint(
 
     result = batch_identify(probe, gallery, threshold=body.threshold)
     return IdentifyResponse(**result)
+
+
+@router.post("/extract-burst", response_model=ExtractResponse)
+async def extract_burst_endpoint(
+    body: BurstRequest,
+    x_service_key: Optional[str] = Header(default=None, alias="X-Service-Key"),
+):
+    """
+    Nhận mảng JPEG images (base64) để kiểm tra chớp mắt (Liveness).
+    Nếu chớp mắt thành công, trả về embedding của khung hình phù hợp nhất.
+    """
+    _verify_service_key(x_service_key)
+
+    try:
+        emb, quality, meta = extract_sequence(body.images_b64, min_blur=body.min_blur)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.exception("Unexpected error in extract_sequence")
+        raise HTTPException(status_code=500, detail=f"AI inference error: {e}")
+
+    return ExtractResponse(
+        embedding_b64=_emb_to_b64(emb),
+        quality=quality,
+        meta=meta,
+    )

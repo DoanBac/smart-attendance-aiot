@@ -48,6 +48,11 @@ class VerifyFaceRequest(BaseModel):
     challenge_dir: Optional[str] = None  # "left" | "right" — pose liveness challenge
 
 
+class VerifySequenceRequest(BaseModel):
+    images_b64: List[str]   # Burst frames for blink liveness
+    class_id: UUID
+
+
 class VerifyFaceResponse(BaseModel):
     matched: bool
     student_id: Optional[UUID] = None

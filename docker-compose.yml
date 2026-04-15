@@ -33,6 +33,7 @@ services:
       COSINE_THRESHOLD: "0.50"     # buffalo_l is more discriminative; 0.50 safe for angled pose
     volumes:
       - insightface_models:/app/models   # share model cache với backend (nếu cần)
+      - ./edge/models:/app/edge_models:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
       interval: 30s

@@ -23,7 +23,7 @@ from app.models.device import Device
 from app.core.security import get_current_admin, verify_device_token
 from app.schemas.attendance import (
     AttendanceCreate, AttendanceResponse, AttendanceBulkSync,
-    VerifyFaceRequest, VerifyFaceResponse,
+    VerifyFaceRequest, VerifyFaceResponse, VerifySequenceRequest,
 )
 from app.services.attendance_service import (
     create_attendance, bulk_sync_attendance, get_class_attendance,
@@ -100,6 +100,50 @@ async def verify_face(
     await broadcast_attendance(data.class_id, result)
 
     return VerifyFaceResponse(**result)
+
+
+@router.post("/verify-sequence", response_model=VerifyFaceResponse)
+async def verify_sequence(
+    data: VerifySequenceRequest,
+    db: AsyncSession = Depends(get_db),
+    device: Device = Depends(verify_device_token),
+):
+    """
+    Web Kiosk Burst: nhận mảng ảnh (base64 sequence) để kiểm tra chớp mắt (Liveness).
+    Gửi cho AI service, nếu blink_ok thì tự điểm danh.
+    """
+    from app.websocket.attendance_ws import broadcast_attendance
+    from app.services.attendance_service import verify_sequence_and_log
+
+    esp = device.esp8266_url
+
+    if esp:
+        asyncio.create_task(_notify_esp(esp, "/door/scan"))
+
+    result = await verify_sequence_and_log(
+        db, data.images_b64, data.class_id,
+        device_id=device.id,
+    )
+
+    if esp:
+        status = result.get("status", "")
+        if status in ("present", "already_marked"):
+            asyncio.create_task(_notify_esp(esp, "/door/open"))
+        elif status in ("unknown", "no_face", "liveness_failed", "error"):
+            asyncio.create_task(_notify_esp(esp, "/door/deny"))
+
+    from sqlalchemy import select as sa_select
+    from app.models.class_ import Class
+    _cls_res = await db.execute(sa_select(Class).where(Class.id == data.class_id))
+    _cls = _cls_res.scalar_one_or_none()
+    result["class_id"]   = data.class_id
+    result["class_name"] = _cls.class_name if _cls else f"Class #{data.class_id}"
+    result["class_code"] = _cls.class_code if _cls else ""
+
+    await broadcast_attendance(data.class_id, result)
+
+    return VerifyFaceResponse(**result)
+
 
 @router.get("/today", response_model=List[AttendanceResponse])
 async def get_today(
